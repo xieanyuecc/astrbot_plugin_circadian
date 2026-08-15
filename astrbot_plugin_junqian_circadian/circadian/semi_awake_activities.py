@@ -11,7 +11,7 @@ from datetime import datetime
 from dataclasses import dataclass
 from typing import Optional, Literal
 
-from .. import logger
+from astrbot import logger
 
 
 # ActionIntent 类型

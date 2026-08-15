@@ -19,7 +19,6 @@ from .circadian import (
     CircadianStateMachine,
     CircadianClock,
     EmotionalState,
-    compute_emotional_from_recall,
     DreamGenerator,
     SemiAwakeEngine,
     CircadianPersistence,
@@ -89,6 +88,10 @@ class JunqianCircadianPlugin(star.Star):
         # 检测到 rain_wake 时填入，下一次发消息时（on_decorating_result）注入到消息链
         self._pending_rain_wake_msg: str = ""
 
+        # 最近一次见过的 AstrMessageEvent——给背景任务（clock ticker 触发梦境）用
+        # livingmemory 工具内部需要 event 才能决定 session/persona 作用域
+        self._last_event: Optional[AstrMessageEvent] = None
+
         logger.info("[JunqianCircadian] Plugin initialized")
 
     # ─────────────────────────────────────────────
@@ -135,10 +138,12 @@ class JunqianCircadianPlugin(star.Star):
 
     async def terminate(self):
         """插件卸载/停用时保存状态，取消定时器"""
-        if self._clock_task:
-            self._clock_task.cancel()
-        if self._rain_wake_task:
-            self._rain_wake_task.cancel()
+        tasks_to_cancel = [t for t in (self._clock_task, self._rain_wake_task) if t]
+        for t in tasks_to_cancel:
+            t.cancel()
+        if tasks_to_cancel:
+            # 等所有协程收到 CancelledError 后再继续，避免丢任务
+            await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
         await self._sensory.stop()
         await self._save_all_state()
         logger.info("[JunqianCircadian] Plugin terminated, state saved")
@@ -235,7 +240,7 @@ class JunqianCircadianPlugin(star.Star):
         await asyncio.sleep(delay * 60)  # 入睡后 delay 分钟
 
         try:
-            recall_result = await self._lm_bridge.recall_for_dream()
+            recall_result = await self._lm_bridge.recall_for_dream(event=self._last_event)
             mood = self._emotional_state.mood if self._emotional_state else "平静"
             provider_id = self.config.get("dream_provider_id")
 
@@ -266,6 +271,7 @@ class JunqianCircadianPlugin(star.Star):
             2) 温度感知（temperature context，传入情绪容器）
             3) 复合情境（lifestyle context，时间×天气×节律）
         """
+        self._last_event = event
         if self._state_machine is None or self._emotional_state is None:
             return
 
@@ -328,6 +334,7 @@ class JunqianCircadianPlugin(star.Star):
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, resp):
         """每轮对话后更新情绪漂移"""
+        self._last_event = event
         if self._state_machine is None or self._emotional_state is None:
             return
 
@@ -352,6 +359,7 @@ class JunqianCircadianPlugin(star.Star):
         - AWAKE 状态：注入待呈现的梦境片段
         - AWAKE 状态：注入待发的雨声唤醒消息
         """
+        self._last_event = event
         if self._state_machine is None:
             return
 
@@ -397,6 +405,7 @@ class JunqianCircadianPlugin(star.Star):
     @filter.on_waiting_llm_request()
     async def on_waiting_llm_request(self, event: AstrMessageEvent):
         """用户发消息时如果处于 SEMI_AWAKE，发送提示"""
+        self._last_event = event
         if self._state_machine is None:
             return
 
@@ -410,6 +419,7 @@ class JunqianCircadianPlugin(star.Star):
     @filter.on_agent_done()
     async def on_agent_done(self, event: AstrMessageEvent, run_context, resp):
         """Agent 轮次完成，推进情绪衰减"""
+        self._last_event = event
         if self._emotional_state is None:
             return
 
@@ -556,7 +566,7 @@ class JunqianCircadianPlugin(star.Star):
         这是核心设计——情绪是被你和你们的关系养出来的，不是随机抽的。
         """
         try:
-            recall_result = await self._lm_bridge.recall_for_emotional_context()
+            recall_result = await self._lm_bridge.recall_for_emotional_context(event=self._last_event)
             if recall_result:
                 # 用 LLM 分析 recall 结果，形成情绪判断
                 new_mood, new_intensity = await self._analyze_emotional_from_recall(recall_result)

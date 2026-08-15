@@ -5,7 +5,7 @@ CircadianPersistence — 持久化模块
 from typing import Optional, Any
 import json
 
-from .. import logger
+from astrbot import logger
 
 # KV 存储键名
 CIRCADIAN_STATE_KEY = "circadian_state"
@@ -15,6 +15,7 @@ PENDING_DREAM_KEY = "pending_dream"
 SEMI_AWAKE_LAMBDA_KEY = "semi_awake_lambda"
 WEATHER_SNAPSHOT_KEY = "weather_snapshot"
 LOCATION_KEY = "location"
+FIRST_FETCH_DONE_KEY = "mock_first_fetch_done"
 
 
 class CircadianPersistence:
@@ -73,6 +74,15 @@ class CircadianPersistence:
     async def load_location(self) -> Optional[str]:
         val = await self._get(LOCATION_KEY)
         return val if isinstance(val, str) else None
+
+    # --- Mock 天气首次 fetch 标记 ---
+    # 用于让 mock provider 只在插件首次安装启动时给"测试暴雨"，后续重启/切城市不再触发
+    async def save_first_fetch_done(self, done: bool = True):
+        await self._put(FIRST_FETCH_DONE_KEY, bool(done))
+
+    async def load_first_fetch_done(self) -> bool:
+        val = await self._get(FIRST_FETCH_DONE_KEY, default=False)
+        return bool(val)
 
     # --- 内部方法 ---
     async def _put(self, key: str, value: Any):

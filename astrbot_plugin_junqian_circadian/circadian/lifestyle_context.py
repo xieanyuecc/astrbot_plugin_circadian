@@ -18,7 +18,7 @@ from .sensory import WeatherSnapshot
 @dataclass
 class LifestyleContext:
     """某一刻的生活情境快照"""
-    is_late_night: bool       # 23:00-05:00
+    is_late_night: bool       # 23:00-04:59（hour >= 23 or hour < 5）
     is_cold: bool             # 温度 < 寒冷阈值
     is_cool: bool             # 凉爽阈值 ≤ 温度 < 寒冷阈值
     is_hot: bool              # 温度 > 炎热阈值

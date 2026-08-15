@@ -30,8 +30,9 @@
   },
   "dream_delay_minutes": {
     "type": "int",
-    "description": "入睡后多久生成梦境（分钟）",
-    "default": 30
+    "description": "起床后多久生成梦境（分钟）",
+    "default": 30,
+    "hint": "进入 SEMI_AWAKE 状态后，延迟此分钟数再生成梦境，便于在半醒时回忆刚醒的内容"
   },
   "dream_provider_id": {
     "type": "string",

@@ -104,7 +104,8 @@ class MockWeatherProvider(WeatherProvider):
     设计目的：
     - 让用户不开 API 也能跑完整链路（rain_wake、温度感知、深夜低温等）
     - 预设几个城市的天气人格，让"去旅游"演示更生动
-    - 首次拉取给一帧暴雨，方便立刻看到"被雨声吵醒"的效果
+    - 仅在插件**首次安装启动**时给一帧暴雨，方便立刻看到"被雨声吵醒"的效果
+      （用持久化标记，后续重启不再给暴雨，避免 /set_location 切城市时也吃到）
 
     城市预设：
     - 沙溪 / 中山：南方湿润，雨多
@@ -134,8 +135,12 @@ class MockWeatherProvider(WeatherProvider):
     # 通用模板（未命中预设的城市）
     GENERIC_PROFILE = {"status": "cloudy", "base_temp": 20.0, "rain_1h": 0.5, "humidity_bias": 5, "wind_bias": 1, "desc": "多云"}
 
-    # 启动时给的"测试暴雨"——保证一启动就触发 rain_wake
+    # 启动时给的"测试暴雨"——只在首次安装启动给一次
     BOOT_STORM = {"status": "thunderstorm", "base_temp": 22.0, "rain_1h": 18.5, "humidity_bias": 25, "wind_bias": 6, "desc": "暴雨伴雷电"}
+
+    def __init__(self, persistence=None):
+        # 接收 persistence 用于持久化首次 fetch 标记
+        self._persistence = persistence
 
     def _match_profile(self, location: str) -> Dict[str, Any]:
         """根据 location 字符串匹配城市人格"""
@@ -144,13 +149,25 @@ class MockWeatherProvider(WeatherProvider):
                 return profile
         return self.GENERIC_PROFILE
 
-    async def fetch(self, location: str) -> WeatherSnapshot:
-        # 第一次调用给暴雨（测试用），之后按城市人格派生
-        if not hasattr(self, "_first_fetch_done"):
+    async def _consume_first_fetch(self) -> bool:
+        """检查并消费首次 fetch 标记。返回 True 表示是首次 fetch"""
+        if self._persistence is None:
+            # 没有 persistence，回退到实例内标记（行为同旧版）
+            if hasattr(self, "_first_fetch_done"):
+                return False
             self._first_fetch_done = True
-            profile = self.BOOT_STORM
-        else:
-            profile = self._match_profile(location)
+            return True
+        # 用持久化标记，跨重启也保持
+        flag = await self._persistence.load_first_fetch_done()
+        if flag:
+            return False
+        await self._persistence.save_first_fetch_done(True)
+        return True
+
+    async def fetch(self, location: str) -> WeatherSnapshot:
+        # 仅首次安装启动给暴雨，之后（含后续重启）都按城市人格派生
+        is_first = await self._consume_first_fetch()
+        profile = self.BOOT_STORM if is_first else self._match_profile(location)
 
         # 在 profile 基础上加随机抖动
         temp = profile["base_temp"] + random.uniform(-2.0, 2.0)
@@ -316,7 +333,8 @@ class SensoryModule:
             logger.info("[SensoryModule] Using wttr.in provider")
             return WttrInProvider()
         logger.info("[SensoryModule] Using mock provider")
-        return MockWeatherProvider()
+        # 传 persistence 给 mock provider，用于持久化"首次 fetch 已完成"标记
+        return MockWeatherProvider(persistence=self.persistence)
 
     # ── 生命周期 ──
 

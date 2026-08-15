@@ -3,7 +3,7 @@ CircadianClock — 时间计算模块
 管理睡眠时间、起床时间、模糊窗口
 """
 from dataclasses import dataclass
-from datetime import time, datetime
+from datetime import time, datetime, timedelta
 from typing import Optional
 
 
@@ -16,37 +16,28 @@ class CircadianClock:
 
     def in_fuzzy_window_sleep(self, current: datetime) -> bool:
         """检查当前是否处于睡眠模糊窗口（wake_time 前 fuzzy_window 分钟内）"""
-        target = datetime.combine(current.date(), self.wake_time)
-        # 模糊窗口开始 = wake_time - fuzzy_window
-        window_start = target.replace(hour=0, minute=0) - \
-            __import__("datetime").timedelta(minutes=self.fuzzy_window_minutes)
-        # 简化：用分钟精度比较
-        current_mins = current.hour * 60 + current.minute
-        fuzzy_start_mins = (target - __import__("datetime").timedelta(
-            minutes=self.fuzzy_window_minutes)).hour * 60 + \
-            (target - __import__("datetime").timedelta(minutes=self.fuzzy_window_minutes)).minute
+        # 模糊窗口起点 = wake_time - fuzzy_window，用分钟精度比较避免跨天 datetime 计算
         wake_mins = self.wake_time.hour * 60 + self.wake_time.minute
+        fuzzy_start_mins = (wake_mins - self.fuzzy_window_minutes) % (24 * 60)
+        current_mins = current.hour * 60 + current.minute
 
         if fuzzy_start_mins <= wake_mins:
             # 窗口不跨天
             return fuzzy_start_mins <= current_mins < wake_mins
-        else:
-            # 窗口跨天（例如 wake_time 00:30，fuzzy_window 60分钟，fuzzy_start 23:30）
-            return current_mins >= fuzzy_start_mins or current_mins < wake_mins
+        # 窗口跨天（例如 wake_time 00:30，fuzzy_window 60分钟，fuzzy_start 23:30）
+        return current_mins >= fuzzy_start_mins or current_mins < wake_mins
 
     def in_fuzzy_window_wake(self, current: datetime) -> bool:
         """检查当前是否处于起床模糊窗口（sleep_time 后 fuzzy_window 分钟内）"""
-        target = datetime.combine(current.date(), self.sleep_time)
-        window_end = (target + __import__("datetime").timedelta(
-            minutes=self.fuzzy_window_minutes)).hour * 60 + \
-            (target + __import__("datetime").timedelta(minutes=self.fuzzy_window_minutes)).minute
         sleep_mins = self.sleep_time.hour * 60 + self.sleep_time.minute
+        fuzzy_end_mins = (sleep_mins + self.fuzzy_window_minutes) % (24 * 60)
         current_mins = current.hour * 60 + current.minute
 
         if sleep_mins + self.fuzzy_window_minutes < 24 * 60:
+            # 窗口不跨天
             return sleep_mins <= current_mins < sleep_mins + self.fuzzy_window_minutes
-        else:
-            return current_mins >= sleep_mins or current_mins < (window_end % (24 * 60))
+        # 窗口跨天：sleep_mins 之后 OR fuzzy_end_mins 之前（次日）
+        return current_mins >= sleep_mins or current_mins < fuzzy_end_mins
 
     @staticmethod
     def parse_time(t: str) -> time:

@@ -3,7 +3,7 @@ DreamGenerator — 梦境生成模块
 在 SLEEPING 状态进入 SEMI_AWAKE 时触发
 调用 context.llm_generate() 生成梦境，用 minimax token plan
 """
-from .. import logger
+from astrbot import logger
 
 
 class DreamGenerator:
