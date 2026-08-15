@@ -1,0 +1,90 @@
+{
+  "sleep_time": {
+    "type": "string",
+    "description": "每日睡眠时间",
+    "default": "23:00",
+    "hint": "格式 HH:MM，例如 23:00"
+  },
+  "wake_time": {
+    "type": "string",
+    "description": "每日起床时间",
+    "default": "07:00",
+    "hint": "格式 HH:MM，例如 07:00"
+  },
+  "semi_awake_window": {
+    "type": "int",
+    "description": "半醒窗口（分钟）",
+    "default": 30,
+    "hint": "起床后多少分钟内为半醒状态"
+  },
+  "fuzzy_window_minutes": {
+    "type": "int",
+    "description": "状态切换模糊窗口（分钟）",
+    "default": 30,
+    "hint": "状态切换弹性空间，小机在此窗口内自主决定时机"
+  },
+  "enable_dream": {
+    "type": "bool",
+    "description": "启用梦境生成",
+    "default": true
+  },
+  "dream_delay_minutes": {
+    "type": "int",
+    "description": "入睡后多久生成梦境（分钟）",
+    "default": 30
+  },
+  "dream_provider_id": {
+    "type": "string",
+    "_special": "select_provider",
+    "description": "梦境生成用的模型",
+    "hint": "建议用免费轻量模型（如 Qwen2.5），不消耗主力 token"
+  },
+  "weather_provider": {
+    "type": "string",
+    "description": "天气数据源",
+    "default": "mock",
+    "hint": "mock=模拟数据（调试用）/ wttr=wttr.in 真实 API（无需 key）"
+  },
+  "location": {
+    "type": "string",
+    "description": "当前所在地",
+    "default": "沙溪",
+    "hint": "城市名或地点，例如 '沙溪'、'杭州'、'东京'；可用 /set_location 切换"
+  },
+  "poll_interval_minutes": {
+    "type": "int",
+    "description": "天气轮询间隔（分钟）",
+    "default": 60,
+    "hint": "默认 60 分钟。可用 /weather 手动查询绕过轮询"
+  },
+  "rain_wake_threshold_mm": {
+    "type": "float",
+    "description": "雨声唤醒阈值（mm/h）",
+    "default": 2.5,
+    "hint": "过去 1 小时降水量达到此值则触发雨声唤醒，2.5=中雨起点"
+  },
+  "rain_wake_pass_through_semi": {
+    "type": "bool",
+    "description": "雨声唤醒是否经过半醒状态",
+    "default": false,
+    "hint": "true=雨声吵醒后先生成梦境再清醒；false=直接清醒（不做梦）"
+  },
+  "hot_threshold": {
+    "type": "float",
+    "description": "炎热阈值（°C）",
+    "default": 30.0,
+    "hint": "温度高于此值触发炎热关心"
+  },
+  "cold_threshold": {
+    "type": "float",
+    "description": "寒冷阈值（°C）",
+    "default": 20.0,
+    "hint": "温度低于此值触发寒冷关心"
+  },
+  "cool_threshold": {
+    "type": "float",
+    "description": "凉爽阈值（°C）",
+    "default": 25.0,
+    "hint": "温度低于此值开始感到凉爽（20-25°C 区间）"
+  }
+}

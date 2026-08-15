@@ -1,0 +1,2 @@
+# No external dependencies required.
+# Uses only AstrBot SDK built-ins (context.llm_generate, KV store, hooks).
