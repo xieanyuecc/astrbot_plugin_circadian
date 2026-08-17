@@ -1,38 +1,45 @@
 {
-  "sleep_time": {
+  "sleep_window_start": {
     "type": "string",
-    "description": "每日睡眠时间",
+    "description": "入睡窗口起点（开始渐困）",
     "default": "23:00",
-    "hint": "格式 HH:MM，例如 23:00"
+    "hint": "格式 HH:MM。过了这一刻起 LLM 回复会自然变短变黏糊，到窗口终点仍未睡则强制切 SLEEPING（语义：困得不行睡着了）"
   },
-  "wake_time": {
+  "sleep_window_end": {
     "type": "string",
-    "description": "每日起床时间",
-    "default": "07:00",
-    "hint": "格式 HH:MM，例如 07:00"
+    "description": "入睡窗口终点（兜底强制入睡）",
+    "default": "00:00",
+    "hint": "格式 HH:MM。晚于 sleep_window_start 即跨午夜（典型用法）；不晚于则窗口不跨天"
+  },
+  "wake_window_start": {
+    "type": "string",
+    "description": "起床窗口起点（最早自然醒）",
+    "default": "07:30",
+    "hint": "格式 HH:MM。每天会在 [起点, 终点] 内随机选一个时刻醒来（持久化，重启不变，跨过凌晨重新随机）"
+  },
+  "wake_window_end": {
+    "type": "string",
+    "description": "起床窗口终点（最晚自然醒）",
+    "default": "08:30",
+    "hint": "格式 HH:MM。中雨以上可在窗口内提前被雨声吵醒（默认走半醒→清醒，不直接清醒）"
   },
   "semi_awake_window": {
     "type": "int",
     "description": "半醒窗口（分钟）",
     "default": 30,
-    "hint": "起床后多少分钟内为半醒状态"
-  },
-  "fuzzy_window_minutes": {
-    "type": "int",
-    "description": "状态切换模糊窗口（分钟）",
-    "default": 30,
-    "hint": "状态切换弹性空间，AI 在此窗口内自主决定时机"
+    "hint": "起床后多少分钟内处于半醒状态，会自主发起消息（半醒活动 / 梦境生成）"
   },
   "enable_dream": {
     "type": "bool",
     "description": "启用梦境生成",
-    "default": true
+    "default": true,
+    "hint": "半醒期间会调用配置的模型生成梦境"
   },
   "dream_delay_minutes": {
     "type": "int",
-    "description": "起床后多久生成梦境（分钟）",
+    "description": "梦境生成延迟（分钟）",
     "default": 30,
-    "hint": "进入 SEMI_AWAKE 状态后，延迟此分钟数再生成梦境，便于在半醒时回忆刚醒的内容"
+    "hint": "进入 SEMI_AWAKE 后，延迟此分钟数再生成梦境，便于在半醒时回忆刚醒的内容"
   },
   "dream_provider_id": {
     "type": "string",
@@ -62,13 +69,13 @@
     "type": "float",
     "description": "雨声唤醒阈值（mm/h）",
     "default": 2.5,
-    "hint": "过去 1 小时降水量达到此值则触发雨声唤醒，2.5=中雨起点"
+    "hint": "过去 1 小时降水量达到此值则触发雨声唤醒，2.5=中雨起点。仅在起床窗口内生效（v0.3.0 起）"
   },
   "rain_wake_pass_through_semi": {
     "type": "bool",
     "description": "雨声唤醒是否经过半醒状态",
-    "default": false,
-    "hint": "true=雨声吵醒后先生成梦境再清醒；false=直接清醒（不做梦）"
+    "default": true,
+    "hint": "true=雨声吵醒后先半醒做梦再清醒（v0.3.0 默认，被吵醒不等于清醒）；false=直接清醒（不做梦）"
   },
   "hot_threshold": {
     "type": "float",

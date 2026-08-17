@@ -59,6 +59,30 @@ def _command_response(func):
     return wrapper
 
 
+def _format_drowsy_context(progress: float) -> str:
+    """
+    根据渐困进度生成 system_prompt 注入。
+    0.0-0.3：轻微犯困
+    0.3-0.6：开始有点困
+    0.6-0.85：明显困意
+    0.85-1.0：快睡着了
+    """
+    if progress <= 0:
+        return ""
+    if progress < 0.3:
+        body = "微微有点犯困，但还能撑住。"
+    elif progress < 0.6:
+        body = "开始有点困了，回复可以更短更自然，不需要那么完整。"
+    elif progress < 0.85:
+        body = "已经很困了，意识开始黏糊，回答会更简短、更口语化、可能有点断断续续。"
+    else:
+        body = "快撑不住了，意识模糊，可能会在回复中途睡着。"
+    return (
+        f"<internal_state>状态：{body}（生理节律窗口进度 {progress * 100:.0f}%）"
+        f"</internal_state>"
+    )
+
+
 class JunqianCircadianPlugin(star.Star):
     """生理节律系统插件"""
 
@@ -70,15 +94,22 @@ class JunqianCircadianPlugin(star.Star):
         # 持久化
         self._persistence = CircadianPersistence(self)
 
-        # 时钟
-        sleep_t = self.config.get("sleep_time", "23:00")
-        wake_t = self.config.get("wake_time", "07:00")
-        fuzzy = self.config.get("fuzzy_window_minutes", 30)
+        # 时钟（v0.3.0：入睡/起床窗口 + 半醒时长）
+        sleep_ws = self.config.get("sleep_window_start", "23:00")
+        sleep_we = self.config.get("sleep_window_end", "00:00")
+        wake_ws = self.config.get("wake_window_start", "07:30")
+        wake_we = self.config.get("wake_window_end", "08:30")
+        semi = self.config.get("semi_awake_window", 30)
         self._clock = CircadianClock(
-            sleep_time=CircadianClock.parse_time(sleep_t),
-            wake_time=CircadianClock.parse_time(wake_t),
-            fuzzy_window_minutes=fuzzy,
+            sleep_window_start=CircadianClock.parse_time(sleep_ws),
+            sleep_window_end=CircadianClock.parse_time(sleep_we),
+            wake_window_start=CircadianClock.parse_time(wake_ws),
+            wake_window_end=CircadianClock.parse_time(wake_we),
+            semi_awake_window=semi,
         )
+
+        # 当前渐困进度（每分钟 tick 更新），用于 LLM prompt 注入
+        self._sleep_progress: float = 0.0
 
         # 状态机
         self._state_machine: Optional[CircadianStateMachine] = None
@@ -136,6 +167,19 @@ class JunqianCircadianPlugin(star.Star):
         else:
             self._state_machine = CircadianStateMachine(self._clock)
 
+        # 为今天 roll 一个随机唤醒时刻（缺失或跨天则重新随机；同日保持）
+        from datetime import date
+        sm = self._state_machine
+        if sm.needs_wake_time_roll(date.today()):
+            new_wake = self._clock.random_wake_time()
+            sm.set_today_wake_time(new_wake, date.today())
+            logger.info(f"[JunqianCircadian] Today's wake time rolled: {new_wake.strftime('%H:%M')}")
+        else:
+            logger.info(
+                f"[JunqianCircadian] Today's wake time: "
+                f"{sm.get_data().wake_random_time_iso} (kept)"
+            )
+
         # 恢复情绪
         emo_data = await self._persistence.load_emotional_state()
         if emo_data:
@@ -179,8 +223,9 @@ class JunqianCircadianPlugin(star.Star):
 
     async def _clock_ticker(self):
         """
-        每 60 秒检查一次状态转换。
-        在模糊窗口内，AI 自主决定是否切换。
+        每 60 秒检查一次状态转换 + 更新渐困进度。
+        v0.3.0：用 sleep_progress 替换模糊窗口；不再有"AI 自主决定"的随机延迟，
+        渐困节奏纯靠 prompt 注入实现自然过渡；强制切发生在窗口终点。
         """
         while True:
             await asyncio.sleep(60)
@@ -191,21 +236,23 @@ class JunqianCircadianPlugin(star.Star):
                 sm = self._state_machine
                 now = datetime.now()
 
-                # 如果处于模糊转换窗口，用情绪强度调制 λ(t)
-                if sm._data.in_fuzzy_transition and sm.state == CircadianState.AWAKE:
-                    intensity = self._emotional_state.intensity if self._emotional_state else 0.5
-                    # 情绪高 → 更倾向延迟切换（还想陪你）
-                    delay_prob = 0.3 + (intensity * 0.4)
-                    if random.random() < delay_prob:
-                        logger.info(f"[JunqianCircadian] Fuzzy window: staying awake (intensity={intensity:.2f})")
-                        sm._data.in_fuzzy_transition = False
-                        sm._data.fuzzy_decision_made = True
-                        continue
+                progress, signal = sm.tick(now)
+                self._sleep_progress = progress
 
-                new_state = sm.check_and_transition(now)
-                if new_state:
-                    logger.info(f"[JunqianCircadian] State transition: {new_state}")
-                    await self._handle_state_change(new_state)
+                if signal == "force_sleep":
+                    logger.info(
+                        f"[JunqianCircadian] Force sleep at {now.strftime('%H:%M')} "
+                        f"(progress was {progress:.2f})"
+                    )
+                    await self._handle_state_change(CircadianState.SLEEPING)
+                elif signal == "should_wake":
+                    wake_t = sm.get_data().wake_random_time_iso or "?"
+                    logger.info(
+                        f"[JunqianCircadian] Wake time reached: {wake_t} "
+                        f"→ SEMI_AWAKE"
+                    )
+                    await self._handle_state_change(CircadianState.SEMI_AWAKE)
+
                 await self._save_all_state()
 
             except Exception as e:
@@ -213,8 +260,10 @@ class JunqianCircadianPlugin(star.Star):
 
     async def _rain_wake_checker(self):
         """
-        每 60 秒检查一次：当前是否处于 SLEEPING + 天气突变到中雨以上。
+        每 60 秒检查一次：当前是否处于 SLEEPING + 起床窗口内 + 天气突变到中雨以上。
         触发后通过 on_decorating_result 在下一次消息里"主动嘟囔"。
+
+        v0.3.0：只在起床窗口内才生效（深夜下雨不会吵醒）。
         """
         while True:
             await asyncio.sleep(60)
@@ -224,10 +273,14 @@ class JunqianCircadianPlugin(star.Star):
                 # 仅 SLEEPING 时关心雨声
                 if self._state_machine.state != CircadianState.SLEEPING:
                     continue
+                # v0.3.0：只在起床窗口内才被雨声吵醒
+                now = datetime.now()
+                if not self._clock.in_wake_window(now):
+                    continue
                 threshold = self.config.get("rain_wake_threshold_mm", 2.5)
                 if self._sensory.detect_rain_wake(threshold_mm=threshold):
-                    to_awake = not self.config.get("rain_wake_pass_through_semi", False)
-                    if self._state_machine.trigger_rain_wake(to_awake=to_awake):
+                    pass_through_semi = self.config.get("rain_wake_pass_through_semi", True)
+                    if self._state_machine.trigger_rain_wake(pass_through_semi=pass_through_semi):
                         wx = self._sensory.current_weather
                         desc = wx.description if wx else "中雨"
                         # 设置 pending 消息——下次对话时由 on_decorating_result 注入
@@ -235,7 +288,7 @@ class JunqianCircadianPlugin(star.Star):
                             f"……唔……外面{desc}……被吵醒了……"
                         )
                         logger.info(
-                            f"[JunqianCircadian] Rain wake triggered: "
+                            f"[JunqianCircadian] Rain wake triggered in wake window: "
                             f"{self._state_machine.state.value} pending_msg set"
                         )
                         await self._save_all_state()
@@ -330,6 +383,11 @@ class JunqianCircadianPlugin(star.Star):
         # ── 清醒状态：注入三层 context ──
         if sm.state == CircadianState.AWAKE:
             ctx_parts = []
+
+            # 0) 渐困提示（v0.3.0）：仅当 sleep_progress > 0 时注入
+            progress = self._clock.sleep_progress(datetime.now())
+            if progress > 0:
+                ctx_parts.append(_format_drowsy_context(progress))
 
             # 1) 情绪基调
             emo_ctx = format_emotional_context(self._emotional_state)
@@ -490,8 +548,13 @@ class JunqianCircadianPlugin(star.Star):
             lines.append(f"当前天气：{wx.description}，{wx.temperature:.0f}°C，湿度 {wx.humidity:.0f}%")
             if wx.rain_1h > 0:
                 lines.append(f"降水：{wx.rain_1h:.1f}mm/h")
-        lines.append(f"睡眠时间：{self.config.get('sleep_time', '23:00')}")
-        lines.append(f"起床时间：{self.config.get('wake_time', '07:00')}")
+        lines.append(f"睡眠窗口：{self.config.get('sleep_window_start', '23:00')} – {self.config.get('sleep_window_end', '00:00')}")
+        lines.append(f"起床窗口：{self.config.get('wake_window_start', '07:30')} – {self.config.get('wake_window_end', '08:30')}")
+        sm_data = sm.get_data()
+        if sm_data.wake_random_time_iso:
+            lines.append(f"今日随机唤醒时刻：{sm_data.wake_random_time_iso}")
+        if self._sleep_progress > 0:
+            lines.append(f"渐困进度：{self._sleep_progress * 100:.0f}%")
         if self._pending_dream_text:
             lines.append(f"梦境：{self._pending_dream_text[:50]}...")
         yield event.plain_result("\n".join(lines))

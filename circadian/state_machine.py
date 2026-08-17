@@ -1,13 +1,15 @@
 """
 CircadianStateMachine — 状态机模块
+v0.3.0 重构：渐困进度 + 兜底强制 + 每日定时随机唤醒
+
 三态：AWAKE / SLEEPING / SEMI_AWAKE
-支持模糊窗口转换，对话可提前/延迟状态切换
+进入入睡窗口后状态仍是 AWAKE，但 progress 会从 0→1；到终点兜底切 SLEEPING。
+入睡后每天固定时刻随机唤醒，重启不变；跨过凌晨会重新随机。
 """
 from enum import Enum
-from dataclasses import dataclass, field
-from datetime import datetime, time
+from dataclasses import dataclass
+from datetime import datetime, time, date
 from typing import Optional
-import random  # noqa: F401 (reserved for future fuzzy probability modulation)
 
 from .clock import CircadianClock
 
@@ -18,7 +20,7 @@ class CircadianState(Enum):
     SEMI_AWAKE = "semi_awake"
 
 
-# 重要消息关键词，睡眠中检测到这些会"感知渗透"
+# 睡眠中检测到这些会"感知渗透"（轻微 arousal）
 IMPORTANT_MESSAGE_KEYWORDS = [
     "紧急", "出事", "生病", "危险", "报警",
     "我在", "你还在吗", "醒醒", "救命",
@@ -28,11 +30,12 @@ IMPORTANT_MESSAGE_KEYWORDS = [
 @dataclass
 class CircadianStateData:
     state: CircadianState = CircadianState.AWAKE
-    last_transition: float = 0.0  # Unix timestamp
-    last_state_check: float = 0.0  # Unix timestamp
-    fuzzy_decision_made: bool = False  # 模糊窗口内是否已做切换决定
-    in_fuzzy_transition: bool = False  # 是否处于模糊转换窗口
-    # 用户说"再睡会儿"时记录延迟分钟数
+    last_transition: float = 0.0
+    last_state_check: float = 0.0
+    # 今天随机唤醒时刻（持久化）
+    wake_random_time_iso: Optional[str] = None  # "HH:MM"
+    wake_random_date: Optional[str] = None      # "YYYY-MM-DD"
+    # 用户说"再睡会儿"延迟入睡分钟数
     sleep_delay_minutes: int = 0
 
 
@@ -48,8 +51,6 @@ class CircadianStateMachine:
             last_transition=datetime.now().timestamp(),
             last_state_check=datetime.now().timestamp(),
         )
-        # 模糊窗口内的切换概率参数（λ(t) 的主观调制）
-        self._fuzzy_transition_probability = 0.5  # 默认 50%
 
     @property
     def state(self) -> CircadianState:
@@ -61,138 +62,117 @@ class CircadianStateMachine:
     def _update_check_time(self):
         self._data.last_state_check = datetime.now().timestamp()
 
-    def _is_in_sleep_period(self, current: datetime) -> bool:
+    def _transition_to(self, new_state: CircadianState, current: datetime):
+        self._state = new_state
+        self._data.last_transition = current.timestamp()
+
+    # ── 主循环 ──
+
+    def tick(self, current: Optional[datetime] = None) -> tuple[float, Optional[str]]:
         """
-        判断当前时刻是否处于睡眠时段内（处理跨午夜）。
-
-        睡眠时段定义：[sleep_time, wake_time)
-        - 默认配置 23:00 - 07:00 跨午夜，时段 = 23:00-23:59 ∪ 00:00-06:59
-        - 异常配置 02:00 - 10:00 不跨午夜，时段 = 02:00-09:59
-        - 配置相同（如 07:00 - 07:00）：不睡眠
-
-        注意：精确到分钟，sleep_time 那一刻算入睡，wake_time 那一刻算醒来。
-        """
-        sleep_mins = self.clock.sleep_time.hour * 60 + self.clock.sleep_time.minute
-        wake_mins = self.clock.wake_time.hour * 60 + self.clock.wake_time.minute
-        current_mins = current.hour * 60 + current.minute
-
-        if sleep_mins == wake_mins:
-            # 配置异常：不睡眠
-            return False
-
-        if sleep_mins < wake_mins:
-            # 不跨午夜
-            return sleep_mins <= current_mins < wake_mins
-        # 跨午夜（如 23:00 - 07:00）
-        return current_mins >= sleep_mins or current_mins < wake_mins
-
-    def check_and_transition(self, current: Optional[datetime] = None) -> Optional[CircadianState]:
-        """
-        每分钟检查一次状态是否需要转换。
-        返回转换后的新状态，如果没有转换则返回 None。
-
-        转换规则：
-        - AWAKE → SLEEPING：当前处于睡眠时段内（且不在模糊窗口决策期内）
-        - SLEEPING → SEMI_AWAKE：当前已脱离睡眠时段
-        - SEMI_AWAKE → AWAKE：由外部事件驱动（用户发消息 / 用户说早安）
+        每分钟调一次。返回 (sleep_progress, signal)。
+        signal:
+          - None：无操作
+          - "force_sleep"：到兜底点，状态切到 SLEEPING
+          - "should_wake"：到今日随机唤醒时刻，状态切到 SEMI_AWAKE
+          - "should_rain_wake_semi" / "should_rain_wake_awake"：雨声唤醒触发，由 main.py 调用 trigger_rain_wake()
         """
         if current is None:
             current = datetime.now()
-
         self._update_check_time()
-        prev_state = self._state
 
         if self._state == CircadianState.AWAKE:
-            # 模糊窗口内，AI 自主决定是否入睡
-            if self.clock.in_fuzzy_window_wake(current):
-                if not self._data.fuzzy_decision_made:
-                    # 在模糊窗口内，AI 决定再陪一会儿
-                    # 标记模糊决策完成，本轮不切换
-                    self._data.fuzzy_decision_made = True
-                    self._data.in_fuzzy_transition = True
-                    return None
-                # 模糊决策已做，本轮不再处理
-                return None
-
-            # 模糊窗口外：判断当前是否处于睡眠时段
-            if self._is_in_sleep_period(current):
+            # 计算渐困进度
+            progress = self.clock.sleep_progress(current)
+            if self.clock.should_force_sleep(current):
                 self._transition_to(CircadianState.SLEEPING, current)
+                return progress, "force_sleep"
+            return progress, None
 
         elif self._state == CircadianState.SLEEPING:
-            # 脱离睡眠时段就转半醒
-            if not self._is_in_sleep_period(current):
-                self._transition_to(CircadianState.SEMI_AWAKE, current)
+            # 是否到今日随机唤醒时刻
+            if self._data.wake_random_time_iso:
+                wake_t = self.clock.parse_time(self._data.wake_random_time_iso)
+                if self.clock.has_wake_time_passed(wake_t, current):
+                    self._transition_to(CircadianState.SEMI_AWAKE, current)
+                    return 0.0, "should_wake"
+            return 0.0, None
 
-        elif self._state == CircadianState.SEMI_AWAKE:
-            # 半醒状态由外部事件驱动转换（用户发消息 / 用户说早安）
-            # 这里只做检查，不自动转 AWAKE
-            pass
+        # SEMI_AWAKE 由外部事件驱动（用户发消息 / 用户说早安）
+        return 0.0, None
 
-        return self._state if self._state != prev_state else None
+    # ── 每日随机唤醒时刻 ──
 
-    def _transition_to(self, new_state: CircadianState, current: datetime):
-        """执行状态转换"""
-        self._state = new_state
-        self._data.last_transition = current.timestamp()
-        self._data.fuzzy_decision_made = False
-        self._data.in_fuzzy_transition = False
+    def set_today_wake_time(self, wake_t: time, today_date: Optional[date] = None):
+        """
+        设置今日随机唤醒时刻。
+        如果传入日期与已存日期不同（跨天），覆盖；相同则保留。
+        """
+        if today_date is None:
+            today_date = date.today()
+        today_iso = today_date.isoformat()
+        if self._data.wake_random_date != today_iso:
+            self._data.wake_random_date = today_iso
+            self._data.wake_random_time_iso = wake_t.strftime("%H:%M")
+
+    def needs_wake_time_roll(self, today_date: Optional[date] = None) -> bool:
+        """是否需要为今天重新随机一个唤醒时刻（跨天或缺失）。"""
+        if today_date is None:
+            today_date = date.today()
+        return (
+            self._data.wake_random_date != today_date.isoformat()
+            or self._data.wake_random_time_iso is None
+        )
+
+    # ── 外部事件触发 ──
 
     def trigger_sleep(self, delay_minutes: int = 0):
-        """用户说晚安，提前触发睡眠"""
+        """用户说"晚安"，立刻切到 SLEEPING（绕过窗口）。"""
         self._data.sleep_delay_minutes = delay_minutes
         self._transition_to(CircadianState.SLEEPING, datetime.now())
 
     def trigger_wake(self):
-        """用户说早安，跳过 SEMI_AWAKE 直接进入 AWAKE"""
+        """用户说"早安"，跳过 SEMI_AWAKE 直接到 AWAKE。"""
         self._transition_to(CircadianState.AWAKE, datetime.now())
 
     def trigger_semi_awake(self):
-        """内部调用：从 SLEEPING 进入 SEMI_AWAKE"""
+        """内部用：从 SLEEPING 进入 SEMI_AWAKE。"""
         self._transition_to(CircadianState.SEMI_AWAKE, datetime.now())
 
     def wake_to_awake(self):
-        """外部事件驱动：用户发消息了，从 SEMI_AWAKE 进入 AWAKE"""
+        """半醒收到消息后切 AWAKE。"""
         self._transition_to(CircadianState.AWAKE, datetime.now())
 
-    def trigger_rain_wake(self, to_awake: bool = True) -> bool:
+    def trigger_rain_wake(self, pass_through_semi: bool = True) -> bool:
         """
-        雨声唤醒：SLEEPING → AWAKE（或 SEMI_AWAKE）。
-
-        默认跳到 AWAKE（真的被吵醒，不做梦）。
-        设置 to_aware=False 则走 SEMI_AWAKE（会触发梦境生成流程）。
-
-        返回 True 表示成功唤醒，False 表示当前不是 SLEEPING 状态。
+        雨声唤醒：SLEEPING → AWAKE 或 SEMI_AWAKE。
+        默认走 SEMI_AWAKE（被吵醒不等于清醒，先梦再醒）。
+        pass_through_semi=False 时直接 AWAKE。
+        只在 SLEEPING 状态下生效。
         """
         if self._state != CircadianState.SLEEPING:
             return False
-        target = CircadianState.AWAKE if to_awake else CircadianState.SEMI_AWAKE
+        target = CircadianState.SEMI_AWAKE if pass_through_semi else CircadianState.AWAKE
         self._transition_to(target, datetime.now())
         return True
 
     def delay_sleep(self, minutes: int):
-        """用户说"再睡会儿"，延迟入睡"""
         self._data.sleep_delay_minutes = minutes
 
     def check_important_message(self, message_str: str) -> bool:
-        """
-        睡眠中检测消息是否重要（感知渗透）。
-        返回 True 表示"模糊听到了"。
-        """
         if self._state != CircadianState.SLEEPING:
             return False
         return any(kw in message_str for kw in IMPORTANT_MESSAGE_KEYWORDS)
 
-    def set_fuzzy_probability(self, prob: float):
-        """设置模糊窗口内的切换概率（由情绪系统调用）"""
-        self._fuzzy_transition_probability = max(0.0, min(1.0, prob))
+    # ── 序列化（持久化） ──
 
     def to_dict(self) -> dict:
         return {
             "state": self._state.value,
             "last_transition": self._data.last_transition,
             "last_state_check": self._data.last_state_check,
-            "fuzzy_decision_made": self._data.fuzzy_decision_made,
-            "in_fuzzy_transition": self._data.in_fuzzy_transition,
+            "wake_random_time_iso": self._data.wake_random_time_iso,
+            "wake_random_date": self._data.wake_random_date,
             "sleep_delay_minutes": self._data.sleep_delay_minutes,
         }
 
@@ -201,7 +181,7 @@ class CircadianStateMachine:
         sm = cls(clock, CircadianState(data["state"]))
         sm._data.last_transition = data.get("last_transition", 0.0)
         sm._data.last_state_check = data.get("last_state_check", 0.0)
-        sm._data.fuzzy_decision_made = data.get("fuzzy_decision_made", False)
-        sm._data.in_fuzzy_transition = data.get("in_fuzzy_transition", False)
+        sm._data.wake_random_time_iso = data.get("wake_random_time_iso")
+        sm._data.wake_random_date = data.get("wake_random_date")
         sm._data.sleep_delay_minutes = data.get("sleep_delay_minutes", 0)
         return sm

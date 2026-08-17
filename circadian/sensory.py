@@ -248,7 +248,7 @@ class WttrInProvider(WeatherProvider):
     def _parse_status(self, desc_en: str) -> str:
         """wttr.in 英文描述 → 内部状态码"""
         desc_lower = desc_en.lower().strip()
-        for key, val in self.WttrInProvider.WTTR_STATUS_MAP.items():
+        for key, val in self.WTTR_STATUS_MAP.items():
             if key in desc_lower:
                 return val
         return "cloudy"  # fallback
