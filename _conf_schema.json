@@ -21,7 +21,7 @@
     "type": "int",
     "description": "状态切换模糊窗口（分钟）",
     "default": 30,
-    "hint": "状态切换弹性空间，小机在此窗口内自主决定时机"
+    "hint": "状态切换弹性空间，AI 在此窗口内自主决定时机"
   },
   "enable_dream": {
     "type": "bool",

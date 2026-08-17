@@ -1,7 +1,7 @@
 """
 SemiAwakeEngine — 半醒自主活动模块
 实现 Wake Opportunity λ(t) 机制：
-- 小机在 SEMI_AWAKE 状态时，每分钟评估一次 λ(t)（自发激活率）
+- AI 在 SEMI_AWAKE 状态时，每分钟评估一次 λ(t)（自发激活率）
 - 若情绪强度高 + 有 open loop，λ(t) 高 → 产生一次 ActionIntent
 - 若情绪平静，λ(t) 低 → 保持 Silent
 """

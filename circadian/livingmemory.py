@@ -131,7 +131,7 @@ class LivingMemoryBridge:
                 topics=topics or [],
                 importance=importance,
                 sentiment=sentiment,
-                reason=reason or "君迁生理节律自动归档",
+                reason=reason or "生理节律自动归档",
             )
             logger.info(f"[Circadian] livingmemory memorize: {memory[:80]}")
             return True

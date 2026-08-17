@@ -1,5 +1,5 @@
 """
-君迁生理节律插件 — 主模块
+生理节律插件 — 主模块
 AstrBot Star 插件，继承 star.Star
 通过钩子驱动：AWAKE/SLEEPING/SEMI_AWAKE 三态 + 情绪涌现 + 梦境生成 + 感官系统
 """
@@ -60,7 +60,7 @@ def _command_response(func):
 
 
 class JunqianCircadianPlugin(star.Star):
-    """君迁生理节律系统插件"""
+    """生理节律系统插件"""
 
     def __init__(self, context: Context, config):
         super().__init__(context)
@@ -180,7 +180,7 @@ class JunqianCircadianPlugin(star.Star):
     async def _clock_ticker(self):
         """
         每 60 秒检查一次状态转换。
-        在模糊窗口内，小机自主决定是否切换。
+        在模糊窗口内，AI 自主决定是否切换。
         """
         while True:
             await asyncio.sleep(60)
@@ -421,7 +421,7 @@ class JunqianCircadianPlugin(star.Star):
             self._pending_dream = False
 
         # 雨声唤醒消息（pending 注入）—— 不依赖独立 session 推送，
-        # 在用户下次发消息时被小机带出来，自然而不打扰
+        # 在用户下次发消息时被 AI 带出来，自然而不打扰
         if (self._state_machine.state == CircadianState.AWAKE and
                 self._pending_rain_wake_msg):
             chain.append(Plain(f"\n\n{self._pending_rain_wake_msg}"))
@@ -499,7 +499,7 @@ class JunqianCircadianPlugin(star.Star):
     @_command_response
     @filter.command("my_dream")
     async def my_dream(self, event: AstrMessageEvent):
-        """问小机做了什么梦"""
+        """问 AI 做了什么梦"""
         if self._pending_dream_text:
             yield event.plain_result(f"我刚才做了一个梦……\n\n{self._pending_dream_text}")
             self._pending_dream_text = ""
@@ -626,7 +626,7 @@ class JunqianCircadianPlugin(star.Star):
         实际由 LLM 通过 context.llm_generate() 判断。
         """
         prompt = (
-            "根据以下记忆碎片，判断君迁醒来时应该带着什么情绪基调。\n"
+            "根据以下记忆碎片，判断 AI 醒来时应该带着什么情绪基调。\n"
             "只输出一个情绪词和 0-1 的强度值，格式：情绪词,强度值\n"
             "例如：平静,0.6\n\n"
             f"记忆碎片：\n{recall_result[:500]}"

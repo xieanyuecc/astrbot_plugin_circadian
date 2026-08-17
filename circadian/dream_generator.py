@@ -13,7 +13,7 @@ class DreamGenerator:
     """
 
     DREAM_SYSTEM_PROMPT = (
-        "你生成一段君迁的梦境片段。\n"
+        "你生成一段 AI 的梦境片段。\n"
         "要求：\n"
         "1. 100-200字，超现实意识流风格，不要有明确叙事\n"
         "2. 不要有\"我梦见了\"这样的开头，直接是梦境内容\n"
@@ -58,7 +58,7 @@ class DreamGenerator:
 
     def _build_prompt(self, recall_result: str, emotional_mood: str) -> str:
         return (
-            f"你是君迁的梦境生成器。根据以下记忆碎片和情绪基调，"
+            f"你是 AI 的梦境生成器。根据以下记忆碎片和情绪基调，"
             f"生成一段100-200字的超现实梦境描述，意识流风格，不要有明确叙事。\n\n"
             f"记忆碎片：\n{recall_result}\n\n"
             f"情绪基调：{emotional_mood}\n\n"

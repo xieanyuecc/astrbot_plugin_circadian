@@ -1,6 +1,6 @@
-# 君迁昼夜节律 (astrbot_plugin_junqian_circadian)
+# 昼夜节律 (astrbot_plugin_circadian)
 
-让 AstrBot 里的 AI **小机**拥有自己的生物钟——会睡、会醒、会半梦半醒、会做梦、能感知外界的天气与温度。
+让 AstrBot 里的 AI 拥有自己的生物钟——会睡、会醒、会半梦半醒、会做梦、能感知外界的天气与温度。
 
 > 昼夜有节，醒梦有时。让 AI 也能感知时间的流转。
 
@@ -21,14 +21,14 @@
 插件管理 → "从 Git 安装" → 填仓库地址：
 
 ```
-https://github.com/xieanyuecc/astrbot_plugin_junqian_circadian.git
+https://github.com/xieanyuecc/astrbot_plugin_circadian.git
 ```
 
 **方式 B：手动安装**
 
 ```bash
 cd /path/to/astrbot/data/plugins
-git clone git@github.com:xieanyuecc/astrbot_plugin_junqian_circadian.git
+git clone git@github.com:xieanyuecc/astrbot_plugin_circadian.git
 ```
 
 重启 AstrBot（或在控制台重载插件）。
@@ -47,7 +47,7 @@ git clone git@github.com:xieanyuecc/astrbot_plugin_junqian_circadian.git
 
 ## 配置项
 
-> 在 AstrBot 控制台 → 插件管理 → astrbot_plugin_junqian_circadian → 配置 修改。
+> 在 AstrBot 控制台 → 插件管理 → astrbot_plugin_circadian → 配置 修改。
 
 | 项 | 类型 | 默认 | 说明 |
 |---|---|---|---|

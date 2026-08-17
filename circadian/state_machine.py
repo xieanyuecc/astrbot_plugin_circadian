@@ -103,10 +103,10 @@ class CircadianStateMachine:
         prev_state = self._state
 
         if self._state == CircadianState.AWAKE:
-            # 模糊窗口内，小机自主决定是否入睡
+            # 模糊窗口内，AI 自主决定是否入睡
             if self.clock.in_fuzzy_window_wake(current):
                 if not self._data.fuzzy_decision_made:
-                    # 在模糊窗口内，小机决定再陪一会儿
+                    # 在模糊窗口内，AI 决定再陪一会儿
                     # 标记模糊决策完成，本轮不切换
                     self._data.fuzzy_decision_made = True
                     self._data.in_fuzzy_transition = True

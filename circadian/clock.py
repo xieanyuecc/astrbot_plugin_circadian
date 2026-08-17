@@ -12,7 +12,7 @@ class CircadianClock:
     sleep_time: time
     wake_time: time
     fuzzy_window_minutes: int = 30
-    """状态切换模糊窗口（分钟），在此窗口内小机自主决定是否切换"""
+    """状态切换模糊窗口（分钟），在此窗口内 AI 自主决定是否切换"""
 
     def in_fuzzy_window_sleep(self, current: datetime) -> bool:
         """检查当前是否处于睡眠模糊窗口（wake_time 前 fuzzy_window 分钟内）"""

@@ -51,7 +51,7 @@ sys.modules["astrbot.core.agent.message"].TextPart = type("TextPart", (), {})
 
 
 # ── 包方式 import ──
-PLUGIN_DIR = r"D:\workspace\astrbot-plugins\astrbot_plugin_junqian_circadian\astrbot_plugin_junqian_circadian"
+PLUGIN_DIR = r"D:\workspace\astrbot-plugins\astrbot_plugin_circadian"
 sys.path.insert(0, PLUGIN_DIR)
 
 from circadian.clock import CircadianClock
