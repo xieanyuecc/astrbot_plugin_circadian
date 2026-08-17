@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# AstrBot 运行时数据（持久化在 data/<plugin_name>/data/）
+# 不入仓，部署时由插件运行时自动创建
+data/
+
+# 测试 / 调试
+.pytest_cache/
+.coverage
+htmlcov/
+*.log
+
+# 临时文件
+*.tmp
+*.bak
