@@ -61,27 +61,40 @@ class CircadianStateMachine:
     def _update_check_time(self):
         self._data.last_state_check = datetime.now().timestamp()
 
-    def _should_trigger_sleep(self, current: datetime) -> bool:
-        """检查是否应该进入睡眠"""
-        sleep_mins = self.clock.sleep_time.hour * 60 + self.clock.sleep_time.minute
-        current_mins = current.hour * 60 + current.minute
-        # 到达睡眠时间
-        if current_mins >= sleep_mins:
-            return True
-        return False
+    def _is_in_sleep_period(self, current: datetime) -> bool:
+        """
+        判断当前时刻是否处于睡眠时段内（处理跨午夜）。
 
-    def _should_trigger_wake(self, current: datetime) -> bool:
-        """检查是否应该进入半醒"""
+        睡眠时段定义：[sleep_time, wake_time)
+        - 默认配置 23:00 - 07:00 跨午夜，时段 = 23:00-23:59 ∪ 00:00-06:59
+        - 异常配置 02:00 - 10:00 不跨午夜，时段 = 02:00-09:59
+        - 配置相同（如 07:00 - 07:00）：不睡眠
+
+        注意：精确到分钟，sleep_time 那一刻算入睡，wake_time 那一刻算醒来。
+        """
+        sleep_mins = self.clock.sleep_time.hour * 60 + self.clock.sleep_time.minute
         wake_mins = self.clock.wake_time.hour * 60 + self.clock.wake_time.minute
         current_mins = current.hour * 60 + current.minute
-        if current_mins >= wake_mins:
-            return True
-        return False
+
+        if sleep_mins == wake_mins:
+            # 配置异常：不睡眠
+            return False
+
+        if sleep_mins < wake_mins:
+            # 不跨午夜
+            return sleep_mins <= current_mins < wake_mins
+        # 跨午夜（如 23:00 - 07:00）
+        return current_mins >= sleep_mins or current_mins < wake_mins
 
     def check_and_transition(self, current: Optional[datetime] = None) -> Optional[CircadianState]:
         """
         每分钟检查一次状态是否需要转换。
         返回转换后的新状态，如果没有转换则返回 None。
+
+        转换规则：
+        - AWAKE → SLEEPING：当前处于睡眠时段内（且不在模糊窗口决策期内）
+        - SLEEPING → SEMI_AWAKE：当前已脱离睡眠时段
+        - SEMI_AWAKE → AWAKE：由外部事件驱动（用户发消息 / 用户说早安）
         """
         if current is None:
             current = datetime.now()
@@ -101,12 +114,13 @@ class CircadianStateMachine:
                 # 模糊决策已做，本轮不再处理
                 return None
 
-            # 模糊窗口外：确实到达睡眠时间才进入睡眠
-            if self._should_trigger_sleep(current):
+            # 模糊窗口外：判断当前是否处于睡眠时段
+            if self._is_in_sleep_period(current):
                 self._transition_to(CircadianState.SLEEPING, current)
 
         elif self._state == CircadianState.SLEEPING:
-            if self._should_trigger_wake(current):
+            # 脱离睡眠时段就转半醒
+            if not self._is_in_sleep_period(current):
                 self._transition_to(CircadianState.SEMI_AWAKE, current)
 
         elif self._state == CircadianState.SEMI_AWAKE:

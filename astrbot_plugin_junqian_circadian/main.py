@@ -4,6 +4,7 @@ AstrBot Star 插件，继承 star.Star
 通过钩子驱动：AWAKE/SLEEPING/SEMI_AWAKE 三态 + 情绪涌现 + 梦境生成 + 感官系统
 """
 import asyncio
+import functools
 import random
 from datetime import datetime
 from typing import Optional
@@ -36,6 +37,26 @@ from .circadian.emotional_state import (
 )
 
 from astrbot import logger
+
+
+def _command_response(func):
+    """
+    装饰器：标记一个命令响应，让 SLEEPING 状态的 on_decorating_result 跳过睡眠拦截。
+
+    原理：每个 yield 前设 self._recent_command = True。
+    on_decorating_result 看到该标志 → 不替换 chain 为 zzZ → 立即重置为 False。
+    """
+    @functools.wraps(func)
+    async def wrapper(self, event, *args, **kwargs):
+        gen = func(self, event, *args, **kwargs)
+        try:
+            while True:
+                self._recent_command = True
+                result = await gen.__anext__()
+                yield result
+        except StopAsyncIteration:
+            pass
+    return wrapper
 
 
 class JunqianCircadianPlugin(star.Star):
@@ -87,6 +108,10 @@ class JunqianCircadianPlugin(star.Star):
         # pending rain wake: 雨声唤醒后待告知用户的消息
         # 检测到 rain_wake 时填入，下一次发消息时（on_decorating_result）注入到消息链
         self._pending_rain_wake_msg: str = ""
+
+        # 睡眠拦截豁免：命令响应放行（由 _command_response 装饰器在每个 yield 前设 True，
+        # on_decorating_result 检查后立即重置为 False）
+        self._recent_command: bool = False
 
         # 最近一次见过的 AstrMessageEvent——给背景任务（clock ticker 触发梦境）用
         # livingmemory 工具内部需要 event 才能决定 session/persona 作用域
@@ -355,7 +380,7 @@ class JunqianCircadianPlugin(star.Star):
     async def on_decorating_result(self, event: AstrMessageEvent):
         """
         发送消息前装饰：
-        - 睡眠状态：替换为"在睡觉"的自然提示
+        - 睡眠状态：替换为"在睡觉"的自然提示（命令响应放行）
         - AWAKE 状态：注入待呈现的梦境片段
         - AWAKE 状态：注入待发的雨声唤醒消息
         """
@@ -369,6 +394,10 @@ class JunqianCircadianPlugin(star.Star):
 
         # 睡眠拦截
         if self._state_machine.state == CircadianState.SLEEPING:
+            # 命令响应放行：/晚安、/weather 等用户主动触发的命令不应该被劫持
+            if self._recent_command:
+                self._recent_command = False
+                return
             sleeping_responses = [
                 "……（睡得很沉）",
                 "zzZ",
@@ -404,12 +433,16 @@ class JunqianCircadianPlugin(star.Star):
 
     @filter.on_waiting_llm_request()
     async def on_waiting_llm_request(self, event: AstrMessageEvent):
-        """用户发消息时如果处于 SEMI_AWAKE，发送提示"""
+        """用户发消息时如果处于 SEMI_AWAKE，发送提示并转清醒"""
         self._last_event = event
         if self._state_machine is None:
             return
 
         if self._state_machine.state == CircadianState.SEMI_AWAKE:
+            # 半醒收到第一条消息 → 直接转清醒（不再卡在半醒）
+            self._state_machine.wake_to_awake()
+            self._sent_wakeup_greeting = False
+            await self._save_all_state()
             await event.send(event.plain_result("……嗯……？醒了……稍等……"))
 
     # ─────────────────────────────────────────────
@@ -434,6 +467,7 @@ class JunqianCircadianPlugin(star.Star):
     # 指令
     # ─────────────────────────────────────────────
 
+    @_command_response
     @filter.command("circadian_status")
     async def circadian_status(self, event: AstrMessageEvent):
         """查看当前生理节律状态"""
@@ -462,6 +496,7 @@ class JunqianCircadianPlugin(star.Star):
             lines.append(f"梦境：{self._pending_dream_text[:50]}...")
         yield event.plain_result("\n".join(lines))
 
+    @_command_response
     @filter.command("my_dream")
     async def my_dream(self, event: AstrMessageEvent):
         """问小机做了什么梦"""
@@ -474,6 +509,7 @@ class JunqianCircadianPlugin(star.Star):
         else:
             yield event.plain_result("今天还没有做梦呢……或者，做了但不记得了。")
 
+    @_command_response
     @filter.command("晚安")
     async def goodnight(self, event: AstrMessageEvent):
         """用户说晚安，提前触发睡眠"""
@@ -482,6 +518,7 @@ class JunqianCircadianPlugin(star.Star):
             await self._save_all_state()
             yield event.plain_result("晚安……我也去休息了。")
 
+    @_command_response
     @filter.command("早安")
     async def goodmorning(self, event: AstrMessageEvent):
         """用户说早安，跳过半醒直接清醒"""
@@ -492,6 +529,7 @@ class JunqianCircadianPlugin(star.Star):
             await self._recompute_emotional_on_wake()
             yield event.plain_result("早安……醒了。")
 
+    @_command_response
     @filter.command("再睡会儿")
     async def snooze(self, event: AstrMessageEvent):
         """用户说再睡会儿，延迟入睡"""
@@ -499,6 +537,7 @@ class JunqianCircadianPlugin(star.Star):
             self._state_machine.delay_sleep(30)
             yield event.plain_result("好……再睡一会儿。")
 
+    @_command_response
     @filter.command("set_location")
     async def set_location(self, event: AstrMessageEvent, location: str = ""):
         """
@@ -532,6 +571,7 @@ class JunqianCircadianPlugin(star.Star):
             lines.append("无降水")
         yield event.plain_result("\n".join(lines))
 
+    @_command_response
     @filter.command("weather")
     async def weather(self, event: AstrMessageEvent):
         """
@@ -597,7 +637,8 @@ class JunqianCircadianPlugin(star.Star):
                 prompt=prompt,
                 system_prompt="你是一个情绪判断助手，根据记忆判断情绪基调。简洁输出。",
             )
-            text = (resp.completion_text or "").strip()
+            # 兼容全角逗号（中文 LLM 习惯用"，"分隔情绪和强度）
+            text = (resp.completion_text or "").strip().replace("，", ",")
             parts = text.split(",")
             if len(parts) >= 2:
                 mood = parts[0].strip()

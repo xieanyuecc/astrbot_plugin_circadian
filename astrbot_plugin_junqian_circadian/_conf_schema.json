@@ -43,8 +43,8 @@
   "weather_provider": {
     "type": "string",
     "description": "天气数据源",
-    "default": "mock",
-    "hint": "mock=模拟数据（调试用）/ wttr=wttr.in 真实 API（无需 key）"
+    "default": "wttr",
+    "hint": "wttr=wttr.in 真实 API（无需 key，全球覆盖，默认推荐）/ mock=模拟数据（调试用，沙溪默认中雨可能触发雨声唤醒）"
   },
   "location": {
     "type": "string",
