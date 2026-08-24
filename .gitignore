@@ -40,3 +40,13 @@ htmlcov/
 # 临时文件
 *.tmp
 *.bak
+
+# 密钥 / 凭证（公开仓库红线，绝不进仓）
+.env
+.env.*
+*.key
+*.pem
+*.p12
+*.crt
+secrets/
+credentials/
