@@ -16,6 +16,8 @@ SEMI_AWAKE_LAMBDA_KEY = "semi_awake_lambda"
 WEATHER_SNAPSHOT_KEY = "weather_snapshot"
 LOCATION_KEY = "location"
 FIRST_FETCH_DONE_KEY = "mock_first_fetch_done"
+MEMORY_BUFFER_KEY = "memory_buffer"
+NIGHT_MSG_COUNT_KEY = "night_msg_count"
 
 
 class CircadianPersistence:
@@ -83,6 +85,21 @@ class CircadianPersistence:
     async def load_first_fetch_done(self) -> bool:
         val = await self._get(FIRST_FETCH_DONE_KEY, default=False)
         return bool(val)
+
+    # --- 近期互动缓冲 ---
+    async def save_memory(self, items: list):
+        await self._put(MEMORY_BUFFER_KEY, items)
+
+    async def load_memory(self) -> Optional[list]:
+        return await self._get(MEMORY_BUFFER_KEY)
+
+    # --- 夜间消息计数 ---
+    async def save_night_msg_count(self, count: int):
+        await self._put(NIGHT_MSG_COUNT_KEY, count)
+
+    async def load_night_msg_count(self) -> int:
+        val = await self._get(NIGHT_MSG_COUNT_KEY)
+        return int(val) if isinstance(val, (int, float)) else 0
 
     # --- 内部方法 ---
     async def _put(self, key: str, value: Any):

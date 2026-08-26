@@ -1,0 +1,47 @@
+"""
+MemoryBuffer — 近期互动缓冲
+滚动保存最近 N 轮对话（用户说了什么 + AI 回了什么），
+作为梦境生成和"醒来心情"的真实素材。
+
+设计动机：情绪和梦应当从真实互动中长出来，而不是 LLM 凭空编造。
+"""
+from typing import List, Dict
+from datetime import datetime
+
+MAX_ITEMS = 40          # 缓冲区上限（约 40 轮）
+MAX_TEXT_LEN = 120      # 每条文本截断长度
+
+
+class MemoryBuffer:
+    def __init__(self, persistence):
+        self._persistence = persistence
+        self._items: List[Dict] = []
+
+    async def load(self):
+        data = await self._persistence.load_memory()
+        self._items = list(data) if isinstance(data, list) else []
+
+    async def append(self, user_text: str, reply_text: str):
+        """记录一轮对话。空消息跳过。"""
+        user_text = (user_text or "").strip()
+        reply_text = (reply_text or "").strip()
+        if not user_text and not reply_text:
+            return
+        self._items.append({
+            "t": datetime.now().strftime("%m-%d %H:%M"),
+            "u": user_text[:MAX_TEXT_LEN],
+            "r": reply_text[:MAX_TEXT_LEN],
+        })
+        if len(self._items) > MAX_ITEMS:
+            self._items = self._items[-MAX_ITEMS:]
+        await self._persistence.save_memory(self._items)
+
+    def recent_text(self, n: int = 8) -> str:
+        """最近 n 轮对话的纯文本，供 LLM 当素材"""
+        lines = []
+        for item in self._items[-n:]:
+            if item.get("u"):
+                lines.append(f"[{item['t']}] 用户：{item['u']}")
+            if item.get("r"):
+                lines.append(f"[{item['t']}] AI：{item['r']}")
+        return "\n".join(lines)

@@ -51,7 +51,13 @@
     "type": "string",
     "description": "天气数据源",
     "default": "wttr",
-    "hint": "wttr=wttr.in 真实 API（无需 key，全球覆盖，默认推荐）/ mock=模拟数据（调试用，沙溪默认中雨可能触发雨声唤醒）"
+    "hint": "qweather=和风天气（国内服务快且稳，需免费 key，推荐）/ wttr=wttr.in 真实 API（无需 key，默认）/ mock=模拟数据（调试用，沙溪默认中雨可能触发雨声唤醒）"
+  },
+  "qweather_key": {
+    "type": "string",
+    "description": "和风天气 API Key",
+    "default": "",
+    "hint": "在 dev.qweather.com 免费注册 → 控制台创建项目和 Key，粘贴到这里。weather_provider 选 qweather 时必填，没填会自动回退到 wttr.in"
   },
   "location": {
     "type": "string",

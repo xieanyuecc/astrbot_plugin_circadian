@@ -22,6 +22,7 @@ from .circadian import (
     EmotionalState,
     DreamGenerator,
     SemiAwakeEngine,
+    MemoryBuffer,
     CircadianPersistence,
     SensoryModule,
     LifestyleContext,
@@ -125,9 +126,18 @@ class JunqianCircadianPlugin(star.Star):
         self._lm_bridge = LivingMemoryBridge(context)
         self._semi_awake = SemiAwakeEngine(context, self._persistence)
 
+        # 近期互动缓冲（梦境与醒来心情的真实素材）
+        self._memory = MemoryBuffer(self._persistence)
+
+        # 昨晚深夜消息数（醒来心情分析用："熬夜了，带一点挂念"）
+        self._night_msg_count = 0
+
         # cron 定时器 task
         self._clock_task: Optional[asyncio.Task] = None
         self._rain_wake_task: Optional[asyncio.Task] = None
+
+        # 后台生活任务（梦境生成 / 醒来心情分析），不阻塞 ticker
+        self._bg_tasks: list = []
 
         # 标记：是否已发送过"刚醒来"提示（避免重复发）
         self._sent_wakeup_greeting = False
@@ -196,6 +206,10 @@ class JunqianCircadianPlugin(star.Star):
             self._emotional_state.dream_content = dream_text
             self._emotional_state.pending_dream_to_show = self._pending_dream
 
+        # 恢复近期互动缓冲 + 昨晚消息计数
+        await self._memory.load()
+        self._night_msg_count = await self._persistence.load_night_msg_count()
+
         # 启动感官系统（恢复 location + 启动天气轮询）
         await self._sensory.start()
 
@@ -207,7 +221,7 @@ class JunqianCircadianPlugin(star.Star):
 
     async def terminate(self):
         """插件卸载/停用时保存状态，取消定时器"""
-        tasks_to_cancel = [t for t in (self._clock_task, self._rain_wake_task) if t]
+        tasks_to_cancel = [t for t in (self._clock_task, self._rain_wake_task, *self._bg_tasks) if t]
         for t in tasks_to_cancel:
             t.cancel()
         if tasks_to_cancel:
@@ -295,14 +309,25 @@ class JunqianCircadianPlugin(star.Star):
             except Exception as e:
                 logger.error(f"[JunqianCircadian] Rain wake checker error: {e}")
 
+    def _spawn_bg_task(self, coro):
+        """把"自主生活"类协程丢到后台跑，不阻塞 ticker；terminate 时统一取消"""
+        task = asyncio.create_task(coro)
+        self._bg_tasks = [t for t in self._bg_tasks if not t.done()]
+        self._bg_tasks.append(task)
+        return task
+
     async def _handle_state_change(self, new_state: CircadianState):
         """状态转换时的处理"""
         if new_state == CircadianState.SLEEPING:
             logger.info("[JunqianCircadian] Entering SLEEPING state")
+            # 入夜：重置昨晚消息计数
+            self._night_msg_count = 0
+            await self._persistence.save_night_msg_count(0)
         elif new_state == CircadianState.SEMI_AWAKE:
             logger.info("[JunqianCircadian] Entering SEMI_AWAKE state")
-            # 生成梦境
-            await self._generate_dream_on_wake()
+            # 生成梦境 + 从近期真实互动中长出今天的心情（均为后台任务，不阻塞 ticker）
+            self._spawn_bg_task(self._generate_dream_on_wake())
+            self._spawn_bg_task(self._recompute_emotional_on_wake())
             # 重置唤醒标记
             self._sent_wakeup_greeting = False
         elif new_state == CircadianState.AWAKE:
@@ -310,19 +335,38 @@ class JunqianCircadianPlugin(star.Star):
             self._sent_wakeup_greeting = False
 
     async def _generate_dream_on_wake(self):
-        """进入 SEMI_AWAKE 时生成梦境"""
+        """进入 SEMI_AWAKE 后，延迟 dream_delay_minutes 生成梦境（后台任务）"""
         if not self.config.get("enable_dream", True):
             return
 
         delay = self.config.get("dream_delay_minutes", 30)
-        await asyncio.sleep(delay * 60)  # 入睡后 delay 分钟
+        await asyncio.sleep(delay * 60)
+
+        # 延迟期间用户已说早安直接清醒了，就不用再做梦
+        if self._state_machine is None or self._state_machine.state == CircadianState.AWAKE:
+            return
 
         try:
-            recall_result = await self._lm_bridge.recall_for_dream(event=self._last_event)
-            mood = self._emotional_state.mood if self._emotional_state else "平静"
-            provider_id = self.config.get("dream_provider_id")
+            # 素材 = 近期真实对话（记忆缓冲）+ livingmemory 长期记忆召回（可用时叠加）
+            memory_text = self._memory.recent_text(8)
+            recall_result = ""
+            try:
+                recall_result = await self._lm_bridge.recall_for_dream(event=self._last_event) or ""
+            except Exception:
+                recall_result = ""
+            material = memory_text
+            if recall_result:
+                material = f"{memory_text}\n{recall_result}" if memory_text else recall_result
 
-            dream_text = await self._dream_gen.generate(recall_result, mood, provider_id)
+            mood = self._emotional_state.mood if self._emotional_state else "平静"
+            wx = self._sensory.current_weather
+            provider_id = self.config.get("dream_provider_id") or None
+
+            dream_text = await self._dream_gen.generate(
+                material, mood,
+                weather_desc=wx.description if wx else "",
+                provider_id=provider_id,
+            )
             if dream_text:
                 self._pending_dream_text = dream_text
                 self._pending_dream = True
@@ -358,6 +402,9 @@ class JunqianCircadianPlugin(star.Star):
 
         # ── 睡眠状态：拦截消息 ──
         if sm.state == CircadianState.SLEEPING:
+            # 深夜消息计数（供醒来心情分析："昨晚你熬夜了"）
+            self._night_msg_count += 1
+            await self._persistence.save_night_msg_count(self._night_msg_count)
             # 检查重要消息（感知渗透）
             if sm.check_important_message(message_str):
                 logger.info("[JunqianCircadian] SLEEPING: detected important message, slight arousal")
@@ -416,10 +463,17 @@ class JunqianCircadianPlugin(star.Star):
 
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, resp):
-        """每轮对话后更新情绪漂移"""
+        """每轮对话后：记入互动缓冲 + 更新情绪漂移"""
         self._last_event = event
         if self._state_machine is None or self._emotional_state is None:
             return
+
+        # 记入近期互动缓冲（梦境与醒来心情的真实素材；任何状态都记）
+        try:
+            reply_text = getattr(resp, "completion_text", "") or ""
+            await self._memory.append(event.message_str, reply_text)
+        except Exception as e:
+            logger.error(f"[JunqianCircadian] Memory append failed: {e}")
 
         if self._state_machine.state != CircadianState.AWAKE:
             return
@@ -555,6 +609,8 @@ class JunqianCircadianPlugin(star.Star):
             lines.append(f"今日随机唤醒时刻：{sm_data.wake_random_time_iso}")
         if self._sleep_progress > 0:
             lines.append(f"渐困进度：{self._sleep_progress * 100:.0f}%")
+        if self._night_msg_count > 0:
+            lines.append(f"昨晚深夜消息：{self._night_msg_count} 条")
         if self._pending_dream_text:
             lines.append(f"梦境：{self._pending_dream_text[:50]}...")
         yield event.plain_result("\n".join(lines))
@@ -665,40 +721,61 @@ class JunqianCircadianPlugin(star.Star):
 
     async def _recompute_emotional_on_wake(self):
         """
-        醒来时：从 livingmemory recall 重新计算情绪基调。
+        醒来时：从近期真实互动重新计算情绪基调。
         这是核心设计——情绪是被你和你们的关系养出来的，不是随机抽的。
+        素材 = 近期对话缓冲（始终可用）+ livingmemory recall（可用时叠加长期记忆视角）。
         """
+        if self._emotional_state is None:
+            return
         try:
-            recall_result = await self._lm_bridge.recall_for_emotional_context(event=self._last_event)
+            memory_text = self._memory.recent_text(10)
+            recall_result = ""
+            try:
+                recall_result = await self._lm_bridge.recall_for_emotional_context(event=self._last_event) or ""
+            except Exception:
+                recall_result = ""
+            material = memory_text
             if recall_result:
-                # 用 LLM 分析 recall 结果，形成情绪判断
-                new_mood, new_intensity = await self._analyze_emotional_from_recall(recall_result)
+                material = f"{memory_text}\n{recall_result}" if memory_text else recall_result
+
+            if material:
+                new_mood, new_intensity = await self._analyze_emotional_from_memory(
+                    material, self._night_msg_count
+                )
                 if new_mood:
                     self._emotional_state.mood = new_mood
                     self._emotional_state.intensity = new_intensity
-                    self._emotional_state.source_memory_hints = [recall_result[:200]]
-                    logger.info(f"[JunqianCircadian] Emotional state on wake: {new_mood} ({new_intensity:.2f})")
+                    self._emotional_state.source_memory_hints = [material[:200]]
+                    logger.info(
+                        f"[JunqianCircadian] Morning mood: {new_mood} ({new_intensity:.2f}), "
+                        f"night_msgs={self._night_msg_count}"
+                    )
             self._emotional_state.last_update = datetime.now().timestamp()
             await self._persistence.save_emotional_state(self._emotional_state.to_dict())
         except Exception as e:
-            logger.error(f"[JunqianCircadian] Emotional recompute on wake failed: {e}")
+            logger.error(f"[JunqianCircadian] Morning mood recompute failed: {e}")
 
-    async def _analyze_emotional_from_recall(self, recall_result: str) -> tuple[str, float]:
+    async def _analyze_emotional_from_memory(
+        self, material_text: str, night_msg_count: int = 0
+    ) -> tuple[str, float]:
         """
-        分析 recall 结果，返回 (mood, intensity)。
+        分析近期互动素材，返回 (mood, intensity)。
         实际由 LLM 通过 context.llm_generate() 判断。
         """
+        night_hint = ""
+        if night_msg_count > 0:
+            night_hint = f"\n注意：昨晚用户发了{night_msg_count}条深夜消息（熬夜了），可以带一点挂念。\n"
         prompt = (
-            "根据以下记忆碎片，判断 AI 醒来时应该带着什么情绪基调。\n"
+            "根据以下 AI 与用户的近期真实互动，判断 AI 今天醒来应该带着什么情绪基调。\n"
             "只输出一个情绪词和 0-1 的强度值，格式：情绪词,强度值\n"
-            "例如：平静,0.6\n\n"
-            f"记忆碎片：\n{recall_result[:500]}"
+            "例如：平静,0.6\n"
+            f"{night_hint}\n互动记录：\n{material_text[:800]}"
         )
         try:
             resp = await self.context.llm_generate(
                 chat_provider_id=self.context.get_using_provider().meta().id,
                 prompt=prompt,
-                system_prompt="你是一个情绪判断助手，根据记忆判断情绪基调。简洁输出。",
+                system_prompt="你是一个情绪判断助手，根据互动记录判断情绪基调。简洁输出。",
             )
             # 兼容全角逗号（中文 LLM 习惯用"，"分隔情绪和强度）
             text = (resp.completion_text or "").strip().replace("，", ",")

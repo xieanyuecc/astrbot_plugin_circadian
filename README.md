@@ -11,8 +11,10 @@
 - **灵活起床（v0.3.0）**：可配置起床窗口（如 `07:30-08:30`），每天在窗口内随机选一个时刻醒来，**持久化**——重启不重新随机，跨过凌晨才会重新随机
 - **雨声唤醒（v0.3.0 收窄）**：中雨以上（≥2.5mm/h）可在起床窗口内触发；默认走 SEMI_AWAKE（被吵醒不等于清醒，先半醒再转醒）
 - **半醒活动**：起床后默认 30 分钟处于 SEMI_AWAKE 状态，可自主发起消息
-- **梦境生成**：睡眠期间累积梦境上下文，醒来时延迟生成（默认延迟 30 分钟，方便回忆）
-- **感官系统**：实时感知天气（wttr.in 真实接口）、温度
+- **近期互动缓冲（v0.4.0）**：滚动记录最近 40 轮真实对话（KV 持久化），梦境和醒来心情从真实互动里长出来，而不是 LLM 凭空编造
+- **梦境生成**：以近期真实对话为主要素材（livingmemory 长期记忆可用时叠加），配合情绪基调与入梦时的天气生成；醒来时延迟生成（默认延迟 30 分钟，方便回忆）
+- **醒来心情（v0.4.0）**：自然醒来时用 LLM 分析近期互动，重新长出当天的情绪基调；深夜消息会被计数，熬夜多了醒来会带一点挂念
+- **感官系统**：实时感知天气与温度，支持 wttr.in（免 key）与和风天气（国内快且稳，需免费 key）
 - **情绪容器**：基于状态 / 天气 / 温度多源信号的情绪涌现
 - **生活上下文**：自动生成 `姐姐在缩被窝` `下着雨窗外有些凉` 一类情境片段，喂给 LLM 当提示
 
@@ -61,7 +63,8 @@ git clone git@github.com:xieanyuecc/astrbot_plugin_circadian.git
 | `enable_dream` | bool | `true` | 是否启用梦境生成 |
 | `dream_delay_minutes` | int | `30` | 进入半醒后多久生成梦境 |
 | `dream_provider_id` | select_provider | — | 梦境生成用的 LLM（建议免费轻量模型） |
-| `weather_provider` | string | `wttr` | `wttr`=wttr.in 真实 API / `mock`=模拟（调试用） |
+| `weather_provider` | string | `wttr` | `qweather`=和风天气（推荐，需 key）/ `wttr`=wttr.in 真实 API / `mock`=模拟（调试用） |
+| `qweather_key` | string | — | 和风天气 API Key，[dev.qweather.com](https://dev.qweather.com) 免费注册；选 `qweather` 未填时自动回退 `wttr` |
 | `location` | string | `沙溪` | 所在地，影响天气查询 |
 | `poll_interval_minutes` | int | `60` | 天气轮询间隔（分钟） |
 | `rain_wake_threshold_mm` | float | `2.5` | 雨声唤醒阈值（mm/h，2.5=中雨起），仅在起床窗口内生效 |
@@ -80,6 +83,16 @@ git clone git@github.com:xieanyuecc/astrbot_plugin_circadian.git
 
 `wake_window_start` 和 `wake_window_end` 不跨午夜（必须 wake_start < wake_end）。
 
+## v0.4.0 主要变更
+
+- **MemoryBuffer 近期互动缓冲**：滚动记录最近 40 轮对话并持久化，作为梦境与醒来心情的真实素材（不依赖 livingmemory，未安装时单独可用）
+- **梦境素材升级**：近期真实对话为主 + livingmemory 长期记忆召回叠加（可用时），并带入入梦时的天气；素材为空时也能凭情绪入梦
+- **醒来心情从真实互动长出来**：自然进入半醒时后台分析近期对话得出当天情绪基调；深夜消息计数，熬夜会带一点挂念（`/circadian_status` 可看）
+- **和风天气（QWeather）数据源**：`weather_provider` 支持 `qweather`（国内服务，`qweather_key` 免费申请），未填 key 自动回退 wttr.in
+- **修复 ticker 阻塞 bug**：梦境生成从 ticker 直接 await 改为后台任务——此前 30 分钟的生成延迟会把时钟循环卡住，导致"半醒→清醒"转换迟到
+
+测试覆盖：`sim_test.py` 29 个用例全过（v0.3.0 的 23 个 + v0.4.0 新增 6 个）。
+
 ## v0.3.0 主要变更
 
 - 移除 `sleep_time` / `wake_time` / `fuzzy_window_minutes`，改为四个窗口字段
@@ -87,8 +100,6 @@ git clone git@github.com:xieanyuecc/astrbot_plugin_circadian.git
 - 起床时刻改为每天固定一次随机（在 `wake_window_start`-`wake_window_end` 内选），跨过凌晨重新随机
 - 雨声唤醒限制到起床窗口内才生效
 - `rain_wake_pass_through_semi` 默认值由 `false` 改为 `true`（被吵醒不等于清醒）
-
-测试覆盖：`sim_test.py` 23 个用例全过。
 
 ## 已知限制
 

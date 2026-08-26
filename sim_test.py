@@ -374,10 +374,113 @@ def test_7_1_sleep_window_non_cross():
 
 
 # ─────────────────────────────────────────────────────────
+# Test 8：MemoryBuffer（近期互动缓冲，v0.4.0）
+# ─────────────────────────────────────────────────────────
+
+class _FakePersistence:
+    """dict 模拟 KV 存储"""
+    def __init__(self):
+        self.store = {}
+
+    async def load_memory(self):
+        return self.store.get("memory_buffer")
+
+    async def save_memory(self, items):
+        self.store["memory_buffer"] = items
+
+
+def test_8_1_memory_buffer_append_and_recent():
+    """append 记录对话，recent_text 按 用户/AI 成对输出"""
+    import asyncio
+    from circadian.memory_buffer import MemoryBuffer, MAX_ITEMS
+
+    p = _FakePersistence()
+    buf = MemoryBuffer(p)
+    asyncio.run(buf.append("在干嘛", "在看窗外的雨"))
+    asyncio.run(buf.append("晚饭吃了吗", "吃了，煮了面"))
+
+    text = buf.recent_text(8)
+    assert "在干嘛" in text and "在看窗外的雨" in text
+    assert "用户：" in text and "AI：" in text
+    assert asyncio.run(p.load_memory()) is not None  # 已持久化
+    print("✓ 8.1: MemoryBuffer append + recent_text + 持久化")
+
+
+def test_8_2_memory_buffer_empty_skip_and_rolling():
+    """空消息跳过；超过上限滚动截断"""
+    import asyncio
+    from circadian.memory_buffer import MemoryBuffer, MAX_ITEMS
+
+    p = _FakePersistence()
+    buf = MemoryBuffer(p)
+
+    # 空消息不记
+    asyncio.run(buf.append("", ""))
+    assert buf.recent_text(5) == "", "❌ 空消息不应记录"
+
+    # 超上限滚动
+    for i in range(MAX_ITEMS + 10):
+        asyncio.run(buf.append(f"消息{i}", f"回复{i}"))
+    assert len(asyncio.run(p.load_memory())) == MAX_ITEMS, "❌ 缓冲应截断到 MAX_ITEMS"
+    assert f"消息{MAX_ITEMS + 9}" in buf.recent_text(5), "❌ 应保留最新的"
+    assert "消息0" not in buf.recent_text(50), "❌ 最旧的应被挤掉"
+    print(f"✓ 8.2: 空消息跳过 + 滚动截断（上限 {MAX_ITEMS}）")
+
+
+def test_8_3_memory_buffer_load_roundtrip():
+    """load 从持久化恢复"""
+    import asyncio
+    from circadian.memory_buffer import MemoryBuffer
+
+    p = _FakePersistence()
+    buf1 = MemoryBuffer(p)
+    asyncio.run(buf1.append("记得我吗", "当然记得"))
+
+    buf2 = MemoryBuffer(p)
+    asyncio.run(buf2.load())
+    assert "记得我吗" in buf2.recent_text(5), "❌ load 后应能读到旧记录"
+    print("✓ 8.3: MemoryBuffer load 恢复")
+
+
+# ─────────────────────────────────────────────────────────
+# Test 9：QWeatherProvider 状态解析（v0.4.0）
+# ─────────────────────────────────────────────────────────
+
+def test_9_1_qweather_parse_status():
+    """和风中文描述 → 内部状态码"""
+    from circadian.sensory import QWeatherProvider
+    prov = QWeatherProvider(api_key="test")
+    cases = {
+        "晴": "clear",
+        "多云": "cloudy",
+        "阴": "cloudy",
+        "小雨": "rain",
+        "大雨": "rain",
+        "雷阵雨": "thunderstorm",
+        "小雪": "snow",
+        "雾": "fog",
+        "霾": "fog",
+        "浮尘": "fog",
+        "未知天气": "cloudy",  # fallback
+    }
+    for desc, expect in cases.items():
+        got = prov._parse_status(desc)
+        assert got == expect, f"❌ '{desc}' 应 {expect}，实际 {got}"
+    print("✓ 9.1: QWeatherProvider 中文天气描述 → 状态码全部正确")
+
+
+def test_9_2_qweather_exported():
+    """QWeatherProvider 从包根可导出"""
+    from circadian import QWeatherProvider as Q2
+    assert Q2 is not None
+    print("✓ 9.2: QWeatherProvider 已在 circadian 包导出")
+
+
+# ─────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("=" * 60)
-    print("v0.3.0 验证 —— 渐困 + 兜底 + 每日随机唤醒")
+    print("v0.3.0+v0.4.0 验证 —— 渐困 + 兜底 + 随机唤醒 + 记忆缓冲")
     print("=" * 60)
 
     print("\n[1] 跨午夜入睡窗口（23:00 - 00:00）")
@@ -418,6 +521,15 @@ if __name__ == "__main__":
     print("\n[7] 不跨天入睡窗口")
     test_7_1_sleep_window_non_cross()
 
+    print("\n[8] MemoryBuffer（v0.4.0）")
+    test_8_1_memory_buffer_append_and_recent()
+    test_8_2_memory_buffer_empty_skip_and_rolling()
+    test_8_3_memory_buffer_load_roundtrip()
+
+    print("\n[9] QWeatherProvider（v0.4.0）")
+    test_9_1_qweather_parse_status()
+    test_9_2_qweather_exported()
+
     print("\n" + "=" * 60)
-    print("✅ 所有 v0.3.0 测试通过！")
+    print("✅ 所有 v0.3.0+v0.4.0 测试通过！")
     print("=" * 60)

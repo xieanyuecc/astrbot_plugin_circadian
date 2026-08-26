@@ -26,21 +26,19 @@ class DreamGenerator:
 
     async def generate(
         self,
-        recall_result: str,
+        memory_text: str,
         emotional_mood: str,
+        weather_desc: str = "",
         provider_id: str = None,
     ) -> str:
         """
         生成一段梦境。
-        recall_result: livingmemory recall 拿到的记忆碎片
+        memory_text: 素材文本（近期真实对话 + 长期记忆召回，可为空）
         emotional_mood: 当前情绪基调
+        weather_desc: 入夜时的天气描述（如"小雨"）
         provider_id: 可选，指定用哪个 provider 生成梦境
         """
-        if not recall_result:
-            logger.warning("[Circadian] Dream generation skipped: no recall result")
-            return ""
-
-        prompt = self._build_prompt(recall_result, emotional_mood)
+        prompt = self._build_prompt(memory_text, emotional_mood, weather_desc)
 
         try:
             prov_id = provider_id or self._ctx.get_using_provider().meta().id
@@ -56,11 +54,17 @@ class DreamGenerator:
             logger.error(f"[Circadian] Dream generation failed: {e}")
             return ""
 
-    def _build_prompt(self, recall_result: str, emotional_mood: str) -> str:
+    def _build_prompt(self, memory_text: str, emotional_mood: str, weather_desc: str) -> str:
+        material = (
+            f"近期真实对话素材：\n{memory_text}\n\n"
+            if memory_text else
+            "今晚没有特别的记忆，凭此刻的情绪入梦。\n\n"
+        )
+        weather_line = f"入夜时的天气：{weather_desc}\n\n" if weather_desc else ""
         return (
-            f"你是 AI 的梦境生成器。根据以下记忆碎片和情绪基调，"
+            f"你是 AI 的梦境生成器。根据以下素材和情绪基调，"
             f"生成一段100-200字的超现实梦境描述，意识流风格，不要有明确叙事。\n\n"
-            f"记忆碎片：\n{recall_result}\n\n"
+            f"{material}{weather_line}"
             f"情绪基调：{emotional_mood}\n\n"
             f"直接输出梦境内容，不要有前后的说明文字。"
         )

@@ -14,7 +14,7 @@ SensoryModule — 感官系统模块
   - WttrInProvider：真实 API（https://wttr.in），无需 key，全球覆盖
 - 雨声唤醒检测：当前 SLEEPING 状态下若检测到中雨/大雨/暴雨，触发状态切换
 
-Provider 通过配置 `weather_provider` 切换："mock" / "wttr"
+Provider 通过配置 `weather_provider` 切换："qweather" / "wttr" / "mock"
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, asdict
@@ -297,6 +297,112 @@ class WttrInProvider(WeatherProvider):
 
 
 # ─────────────────────────────────────────────────────────────
+# 和风天气 Provider —— 国内服务，速度快且稳定，无需访问国外网站
+# ─────────────────────────────────────────────────────────────
+
+class QWeatherProvider(WeatherProvider):
+    """
+    和风天气（qweather）数据源——国内服务，速度快且稳定，无需访问国外网站。
+
+    需要：在 https://dev.qweather.com 免费注册，创建项目和 API Key，填入插件配置 qweather_key。
+    免费开发版额度对个人绰绰有余（每天千次级）。
+
+    流程：
+    1. GeoAPI 用城市名查 location id（带缓存）
+    2. v7/weather/now 拿当前天气
+    """
+
+    # 中文天气描述关键词 → 内部状态码（和风描述本身就是中文，直接透传）
+    QW_STATUS_KEYWORDS = [
+        ("雷", "thunderstorm"),
+        ("雨", "rain"),
+        ("雪", "snow"),
+        ("雾", "fog"),
+        ("霾", "fog"),
+        ("沙", "fog"),
+        ("尘", "fog"),
+        ("云", "cloudy"),
+        ("阴", "cloudy"),
+        ("晴", "clear"),
+    ]
+
+    def __init__(self, api_key: str, timeout: int = 10):
+        self.api_key = api_key
+        self.timeout = timeout
+        self._location_cache: Dict[str, str] = {}  # 城市名 → 和风 location id
+
+    def _parse_status(self, text: str) -> str:
+        """中文天气描述 → 内部状态码"""
+        for kw, status in self.QW_STATUS_KEYWORDS:
+            if kw in text:
+                return status
+        return "cloudy"
+
+    def _request_sync(self, url: str) -> Dict[str, Any]:
+        """带 key 请求（包到 to_thread 里）"""
+        req = urllib.request.Request(url, headers={
+            "X-QW-Api-Key": self.api_key,
+            "User-Agent": "astrbot-circadian/0.4",
+        })
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+
+    def _lookup_sync(self, location: str) -> Optional[str]:
+        """城市名 → 和风 location id"""
+        from urllib.parse import quote
+        url = (
+            f"https://geoapi.qweather.com/v2/city/lookup"
+            f"?location={quote(location)}&number=1"
+        )
+        data = self._request_sync(url)
+        if str(data.get("code", "")) != "200":
+            logger.error(f"[QWeatherProvider] city lookup failed for {location}: code={data.get('code')}")
+            return None
+        return data["location"][0]["id"]
+
+    def _fetch_sync(self, location_id: str) -> Dict[str, Any]:
+        url = f"https://devapi.qweather.com/v7/weather/now?location={location_id}"
+        return self._request_sync(url)
+
+    async def fetch(self, location: str) -> Optional[WeatherSnapshot]:
+        try:
+            # 城市名 → id（带缓存，避免每次都查）
+            loc_id = self._location_cache.get(location)
+            if not loc_id:
+                loc_id = await asyncio.to_thread(self._lookup_sync, location)
+                if not loc_id:
+                    return None
+                self._location_cache[location] = loc_id
+
+            data = await asyncio.to_thread(self._fetch_sync, loc_id)
+            if str(data.get("code", "")) != "200":
+                logger.error(f"[QWeatherProvider] weather now failed: code={data.get('code')}")
+                return None
+            cur = data["now"]
+
+            desc = cur.get("text", "多云")
+            wind_ms = round(float(cur.get("windSpeed", 0)) / 3.6, 1)  # km/h → m/s
+            return WeatherSnapshot(
+                location=location,
+                status=self._parse_status(desc),
+                description=desc,
+                temperature=float(cur.get("temp", 20)),
+                feels_like=float(cur.get("feelsLike", cur.get("temp", 20))),
+                humidity=float(cur.get("humidity", 50)),
+                rain_1h=round(float(cur.get("precip", 0)), 2),
+                wind_speed=wind_ms,
+                timestamp=datetime.now().timestamp(),
+                source="qweather",
+            )
+        except (urllib.error.URLError, urllib.error.HTTPError, KeyError, ValueError) as e:
+            logger.error(f"[QWeatherProvider] fetch failed for {location}: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"[QWeatherProvider] unexpected error: {e}")
+            return None
+
+
+# ─────────────────────────────────────────────────────────────
 # 感官模块主类
 # ─────────────────────────────────────────────────────────────
 
@@ -311,7 +417,7 @@ class SensoryModule:
     - 暴露当前快照供其他模块（state_machine、emotional_state、lifestyle_context）使用
 
     配置项：
-    - weather_provider: "mock" | "wttr"，选哪个 provider
+    - weather_provider: "qweather" | "wttr" | "mock"，选哪个 provider
     - location: 默认所在地（默认 "沙溪"）
     - poll_interval_minutes: 轮询间隔（默认 30）
     - rain_wake_threshold_mm: 雨声唤醒阈值（默认 2.5）
@@ -329,6 +435,13 @@ class SensoryModule:
 
     def _create_provider(self) -> WeatherProvider:
         provider_name = self.config.get("weather_provider", "mock")
+        if provider_name == "qweather":
+            key = self.config.get("qweather_key", "")
+            if key:
+                logger.info("[SensoryModule] Using qweather (和风天气) provider")
+                return QWeatherProvider(key)
+            logger.warning("[SensoryModule] weather_provider=qweather 但未配置 qweather_key，回退到 wttr.in")
+            return WttrInProvider()
         if provider_name == "wttr":
             logger.info("[SensoryModule] Using wttr.in provider")
             return WttrInProvider()
