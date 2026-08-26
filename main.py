@@ -164,10 +164,14 @@ class JunqianCircadianPlugin(star.Star):
     # 生命周期钩子
     # ─────────────────────────────────────────────
 
-    @filter.on_astrbot_loaded()
-    async def on_astrbot_loaded(self):
-        """AstrBot 启动完成时：从 KV 恢复状态，启动时钟 tick + 感官系统"""
-        logger.info("[JunqianCircadian] AstrBot loaded, restoring state...")
+    async def initialize(self):
+        """插件加载/重载时：从 KV 恢复状态，启动时钟 tick + 感官系统
+
+        用 AstrBot 标准生命周期 initialize() 而不是 on_astrbot_loaded 钩子——
+        后者只在 AstrBot 整体启动时触发一次，面板"重载插件"不会触发，
+        会导致重载后状态机一直为空（/circadian_status 显示"系统未初始化"）。
+        """
+        logger.info("[JunqianCircadian] Initializing, restoring state...")
 
         # 恢复状态机
         state_data = await self._persistence.load_state()
