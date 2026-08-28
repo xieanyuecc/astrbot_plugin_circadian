@@ -59,11 +59,17 @@
     "default": "",
     "hint": "在 dev.qweather.com 免费注册 → 控制台创建项目和 Key，粘贴到这里。weather_provider 选 qweather 时必填，没填会自动回退到 wttr.in"
   },
+  "qweather_api_host": {
+    "type": "string",
+    "description": "和风天气专属 API Host",
+    "default": "",
+    "hint": "2024 年后注册的和风免费账号必填：登录 console.qweather.com → 设置，复制「API Host」（形如 abcxyz.re.qweatherapi.com）粘到这里，否则会一直 404。老账号留空走公共域名"
+  },
   "location": {
     "type": "string",
     "description": "当前所在地",
     "default": "沙溪",
-    "hint": "城市名或地点，例如 '沙溪'、'杭州'、'东京'；可用 /set_location 切换"
+    "hint": "城市名或地点，例如 '中山'、'杭州'、'东京'；可用 /set_location 切换。注意和风天气城市库最细到区县，镇级地名（如'沙溪'）查不到，请用上级城市名"
   },
   "poll_interval_minutes": {
     "type": "int",

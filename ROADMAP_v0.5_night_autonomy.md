@@ -62,4 +62,12 @@ AstrBot 4.27.4+ 内置**主动 Agent 系统**（"未来任务"，WebUI 有管理
 
 ## 遗留小 bug（与 v0.5.0 无关，独立修）
 
-和风天气（QWeather）`/weather` 报"暂时拿不到"（poll_now 返回 None）。key 已填 32 位、provider 已切 qweather。怀疑：和风 2024 年后新注册免费账号需用控制台提供的**专属 API Host**（形如 `abcxyz.re.qweatherapi.com`），而代码硬编码了 `devapi.qweather.com` / `geoapi.qweather.com`。方案：配置项加 `qweather_api_host`，或从 key 前缀推导。先看 `backend.log` 里 `[QWeatherProvider]` 的报错码再定位。
+~~和风天气（QWeather）`/weather` 报"暂时拿不到"（poll_now 返回 None）。~~
+
+**✅ 已修复（2026-08-28，v0.4.1，部署验证通过）**。实际踩了三个坑，比预判多两个：
+
+1. **专属 API Host**（预判正确）：2024 年后注册的免费账号必须用控制台「设置」页的专属域名（形如 `abcxyz.re.qweatherapi.com`），公共域名一律 404 → 新增配置项 `qweather_api_host`
+2. **GeoAPI 路径变化**（预料外）：专属 Host 下城市查询挂在 `/geo` 前缀下（`/geo/v2/city/lookup`），与公共域名路径（`geoapi.qweather.com/v2/...`）不同，需分支拼接
+3. **响应 gzip 压缩**（预料外，"key 填对了还是失败"的真凶）：和风对 urllib 请求的响应统一 gzip 压缩，而 urllib 不自动解压 → 200 也解析失败、4xx 错误详情乱码。`_request_sync` 增加 `_decode_body` 处理。教训：**PowerShell 的 Invoke-RestMethod 会自动解压 gzip，用它在预研阶段掩盖了此问题——验证 HTTP 行为要用目标运行时同款库**
+
+另注：和风城市库最细到区县，镇级地名（如"沙溪"）返回 HTTP 400 No Such Location，location 需用市级名（实际部署用 `/set_location 佛山`）。

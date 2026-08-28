@@ -21,6 +21,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from typing import Optional, Dict, Any, ClassVar
 import asyncio
+import gzip
 import json
 import random
 import urllib.request
@@ -307,6 +308,15 @@ class QWeatherProvider(WeatherProvider):
     需要：在 https://dev.qweather.com 免费注册，创建项目和 API Key，填入插件配置 qweather_key。
     免费开发版额度对个人绰绰有余（每天千次级）。
 
+    API Host 说明（重要）：
+    - 2024 年后注册的免费账号不再支持公共域名，必须用控制台（console.qweather.com → 设置）
+      提供的**专属 API Host**（形如 abcxyz.re.qweatherapi.com），否则返回 HTTP 404
+    - 专属 Host 下路径与公共域名不同：GeoAPI 挂在 /geo 前缀（/geo/v2/city/lookup），
+      天气数据 API 不带前缀（/v7/weather/now）
+    - 老账号可不填 qweather_api_host，走公共域名（geoapi.qweather.com/v2/city/lookup +
+      devapi.qweather.com/v7/weather/now）
+    - 和风城市库最细到区县：镇级地名（如"沙溪"）查不到，location 需用上级城市（如"中山"）
+
     流程：
     1. GeoAPI 用城市名查 location id（带缓存）
     2. v7/weather/now 拿当前天气
@@ -326,9 +336,15 @@ class QWeatherProvider(WeatherProvider):
         ("晴", "clear"),
     ]
 
-    def __init__(self, api_key: str, timeout: int = 10):
+    def __init__(self, api_key: str, api_host: str = "", timeout: int = 10):
         self.api_key = api_key
         self.timeout = timeout
+        # 专属 API Host 清洗：容忍用户粘贴带协议头/尾斜杠的形式，统一成裸域名
+        host = (api_host or "").strip()
+        for prefix in ("https://", "http://"):
+            if host.startswith(prefix):
+                host = host[len(prefix):]
+        self.api_host = host.rstrip("/")
         self._location_cache: Dict[str, str] = {}  # 城市名 → 和风 location id
 
     def _parse_status(self, text: str) -> str:
@@ -338,22 +354,38 @@ class QWeatherProvider(WeatherProvider):
                 return status
         return "cloudy"
 
+    @staticmethod
+    def _decode_body(raw: bytes, content_encoding: str) -> str:
+        """解码响应体：和风 API 的响应统一 gzip 压缩，而 urllib 不会自动解压"""
+        if content_encoding == "gzip":
+            raw = gzip.decompress(raw)
+        return raw.decode("utf-8", errors="replace")
+
     def _request_sync(self, url: str) -> Dict[str, Any]:
-        """带 key 请求（包到 to_thread 里）"""
+        """带 key 请求（包到 to_thread 里）。HTTP 错误时把和风响应体里的友好详情带进异常"""
         req = urllib.request.Request(url, headers={
             "X-QW-Api-Key": self.api_key,
             "User-Agent": "astrbot-circadian/0.4",
         })
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
-            return json.loads(resp.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return json.loads(self._decode_body(resp.read(), resp.headers.get("Content-Encoding", "")))
+        except urllib.error.HTTPError as e:
+            # 和风 4xx 响应体带可读错误详情（如 No Such Location），读出来便于定位
+            try:
+                detail = self._decode_body(e.read(), e.headers.get("Content-Encoding", ""))
+            except Exception:
+                detail = ""
+            raise RuntimeError(f"HTTP {e.code} {detail[:200]}") from e
 
     def _lookup_sync(self, location: str) -> Optional[str]:
         """城市名 → 和风 location id"""
         from urllib.parse import quote
-        url = (
-            f"https://geoapi.qweather.com/v2/city/lookup"
-            f"?location={quote(location)}&number=1"
-        )
+        if self.api_host:
+            base = f"https://{self.api_host}/geo"  # 专属 Host：GeoAPI 挂在 /geo 前缀下
+        else:
+            base = "https://geoapi.qweather.com"    # 公共域名（老账号）
+        url = f"{base}/v2/city/lookup?location={quote(location)}&number=1"
         data = self._request_sync(url)
         if str(data.get("code", "")) != "200":
             logger.error(f"[QWeatherProvider] city lookup failed for {location}: code={data.get('code')}")
@@ -361,7 +393,8 @@ class QWeatherProvider(WeatherProvider):
         return data["location"][0]["id"]
 
     def _fetch_sync(self, location_id: str) -> Dict[str, Any]:
-        url = f"https://devapi.qweather.com/v7/weather/now?location={location_id}"
+        base = f"https://{self.api_host}" if self.api_host else "https://devapi.qweather.com"
+        url = f"{base}/v7/weather/now?location={location_id}"
         return self._request_sync(url)
 
     async def fetch(self, location: str) -> Optional[WeatherSnapshot]:
@@ -438,8 +471,12 @@ class SensoryModule:
         if provider_name == "qweather":
             key = self.config.get("qweather_key", "")
             if key:
-                logger.info("[SensoryModule] Using qweather (和风天气) provider")
-                return QWeatherProvider(key)
+                api_host = self.config.get("qweather_api_host", "")
+                logger.info(
+                    f"[SensoryModule] Using qweather (和风天气) provider, "
+                    f"host={api_host or '公共域名（若 404 请在配置里填专属 API Host）'}"
+                )
+                return QWeatherProvider(key, api_host=api_host)
             logger.warning("[SensoryModule] weather_provider=qweather 但未配置 qweather_key，回退到 wttr.in")
             return WttrInProvider()
         if provider_name == "wttr":
