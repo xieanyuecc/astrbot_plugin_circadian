@@ -93,8 +93,12 @@ def format_emotional_context(state: EmotionalState) -> str:
 
     if state.pending_dream_to_show and state.dream_content:
         # 半醒转清醒时，自动注入梦境片段
+        # v0.4.2 逻辑层标记：明确告知 LLM 这是梦，不是真实发生的事（梦境只影响情绪氛围）
         dream_snippet = state.dream_content[:80] + ("..." if len(state.dream_content) > 80 else "")
-        parts.append(f"<internal_state>今晨梦境残片：{dream_snippet}</internal_state>")
+        parts.append(
+            f"<internal_state>今晨梦境残片（这是梦，不是真实发生的事，"
+            f"只作为情绪氛围，不要当作事实引用）：{dream_snippet}</internal_state>"
+        )
 
     return "\n".join(parts)
 

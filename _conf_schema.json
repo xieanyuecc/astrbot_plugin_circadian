@@ -47,6 +47,18 @@
     "description": "梦境生成用的模型",
     "hint": "建议用免费轻量模型（如 Qwen2.5），不消耗主力 token"
   },
+  "dream_recall_rate": {
+    "type": "float",
+    "description": "梦境回忆概率",
+    "default": 0.3,
+    "hint": "每个梦生成后按此概率决定醒来是否记得。人每晚做梦但大部分醒来就忘——0.3 表示约三成梦会被带出来讲，其余只留在梦境日志里。设 1.0 = 每梦必记得（旧行为）"
+  },
+  "dream_log_max": {
+    "type": "int",
+    "description": "梦境日志保留条数",
+    "default": 30,
+    "hint": "梦境独立存储（与真实记忆物理隔离，不会进 livingmemory），仅保留最近 N 条"
+  },
   "weather_provider": {
     "type": "string",
     "description": "天气数据源",

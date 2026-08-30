@@ -21,6 +21,8 @@ from .circadian import (
     CircadianClock,
     EmotionalState,
     DreamGenerator,
+    DreamLog,
+    roll_recall,
     SemiAwakeEngine,
     MemoryBuffer,
     CircadianPersistence,
@@ -126,6 +128,12 @@ class JunqianCircadianPlugin(star.Star):
         self._lm_bridge = LivingMemoryBridge(context)
         self._semi_awake = SemiAwakeEngine(context, self._persistence)
 
+        # 梦境日志（v0.4.2 隔离：独立于真实记忆，只留最近 N 条）
+        self._dream_log = DreamLog(
+            self._persistence,
+            max_items=self.config.get("dream_log_max", 30),
+        )
+
         # 近期互动缓冲（梦境与醒来心情的真实素材）
         self._memory = MemoryBuffer(self._persistence)
 
@@ -209,6 +217,13 @@ class JunqianCircadianPlugin(star.Star):
             self._pending_dream_text = dream_text
             self._emotional_state.dream_content = dream_text
             self._emotional_state.pending_dream_to_show = self._pending_dream
+
+        # 恢复梦境日志（v0.4.2）+ 旧格式迁移：
+        # v0.4.1 及之前只有单个 dream_memory（覆盖式），首次升级时转成日志第一条
+        await self._dream_log.load()
+        if len(self._dream_log) == 0 and dream_text:
+            await self._dream_log.append(dream_text, recalled=self._pending_dream)
+            logger.info("[JunqianCircadian] Legacy dream_memory migrated into dream_log")
 
         # 恢复近期互动缓冲 + 昨晚消息计数
         await self._memory.load()
@@ -372,13 +387,23 @@ class JunqianCircadianPlugin(star.Star):
                 provider_id=provider_id,
             )
             if dream_text:
-                self._pending_dream_text = dream_text
-                self._pending_dream = True
-                self._emotional_state.dream_content = dream_text
-                self._emotional_state.pending_dream_to_show = True
-                await self._persistence.save_dream(dream_text)
-                await self._persistence.save_pending_dream(True)
-                logger.info(f"[JunqianCircadian] Dream saved: {dream_text[:60]}")
+                # v0.4.2 回忆掷骰：人每晚做梦但大部分醒来就忘——
+                # 只有被记得的梦才带出（注入 prompt / 呈现），其余只留日志
+                recall_rate = float(self.config.get("dream_recall_rate", 0.3))
+                recalled = roll_recall(recall_rate)
+                await self._dream_log.append(dream_text, recalled=recalled)
+                if recalled:
+                    self._pending_dream_text = dream_text
+                    self._pending_dream = True
+                    self._emotional_state.dream_content = dream_text
+                    self._emotional_state.pending_dream_to_show = True
+                    await self._persistence.save_dream(dream_text)
+                    await self._persistence.save_pending_dream(True)
+                    logger.info(f"[JunqianCircadian] Dream saved (recalled): {dream_text[:60]}")
+                else:
+                    logger.info(
+                        f"[JunqianCircadian] Dream saved (forgotten on waking): {dream_text[:60]}"
+                    )
         except Exception as e:
             logger.error(f"[JunqianCircadian] Dream generation error: {e}")
 
@@ -473,9 +498,16 @@ class JunqianCircadianPlugin(star.Star):
             return
 
         # 记入近期互动缓冲（梦境与醒来心情的真实素材；任何状态都记）
+        # v0.4.2 梦境隔离：本轮 prompt 若注入过梦境残片（pending_dream_to_show=True），
+        # AI 的复述属于"梦"而非真实互动 → 标记 source=dream，
+        # recent_text 会过滤它，防止梦混进下一晚的梦素材自我繁殖
         try:
             reply_text = getattr(resp, "completion_text", "") or ""
-            await self._memory.append(event.message_str, reply_text)
+            dream_round = bool(self._emotional_state.pending_dream_to_show)
+            await self._memory.append(
+                event.message_str, reply_text,
+                source="dream" if dream_round else "real",
+            )
         except Exception as e:
             logger.error(f"[JunqianCircadian] Memory append failed: {e}")
 
@@ -616,7 +648,12 @@ class JunqianCircadianPlugin(star.Star):
         if self._night_msg_count > 0:
             lines.append(f"昨晚深夜消息：{self._night_msg_count} 条")
         if self._pending_dream_text:
-            lines.append(f"梦境：{self._pending_dream_text[:50]}...")
+            lines.append(f"梦境（待带出）：{self._pending_dream_text[:50]}...")
+        if len(self._dream_log) > 0:
+            latest = self._dream_log.latest()
+            lines.append(
+                f"梦境日志：{len(self._dream_log)} 条（最近 {latest.get('date', '?')}，隔离存储）"
+            )
         yield event.plain_result("\n".join(lines))
 
     @_command_response

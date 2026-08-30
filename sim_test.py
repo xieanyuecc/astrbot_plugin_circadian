@@ -388,6 +388,12 @@ class _FakePersistence:
     async def save_memory(self, items):
         self.store["memory_buffer"] = items
 
+    async def load_dream_log(self):
+        return self.store.get("dream_log")
+
+    async def save_dream_log(self, items):
+        self.store["dream_log"] = items
+
 
 def test_8_1_memory_buffer_append_and_recent():
     """append 记录对话，recent_text 按 用户/AI 成对输出"""
@@ -477,6 +483,110 @@ def test_9_2_qweather_exported():
 
 
 # ─────────────────────────────────────────────────────────
+# Test 10：梦境记忆隔离（v0.4.2）
+# ─────────────────────────────────────────────────────────
+
+def test_10_1_dream_log_append_and_source():
+    """append 记录带 source=dream 恒定标记 + recalled + 持久化"""
+    import asyncio
+    from circadian.dream_log import DreamLog, SOURCE_DREAM
+
+    p = _FakePersistence()
+    log = DreamLog(p, max_items=30)
+    asyncio.run(log.append("梦里全是可以吃的云", recalled=True, day="2026-08-30"))
+    asyncio.run(log.append("梦里在下雨的图书馆", recalled=False, day="2026-08-31"))
+
+    items = asyncio.run(p.load_dream_log())
+    assert len(items) == 2
+    for it in items:
+        assert it["source"] == SOURCE_DREAM, "❌ 梦境记录 source 必须恒为 dream"
+        assert "text" in it and "date" in it and "recalled" in it
+    assert items[0]["recalled"] is True and items[1]["recalled"] is False
+    assert log.latest()["text"] == "梦里在下雨的图书馆"
+    print("✓ 10.1: DreamLog append + source=dream 恒定 + recalled + 持久化")
+
+
+def test_10_2_dream_log_rolling_trim():
+    """超过 max_items 滚动截断"""
+    import asyncio
+    from circadian.dream_log import DreamLog
+
+    p = _FakePersistence()
+    log = DreamLog(p, max_items=5)
+    for i in range(8):
+        asyncio.run(log.append(f"第{i}个梦", recalled=False, day="2026-08-30"))
+    items = asyncio.run(p.load_dream_log())
+    assert len(items) == 5, f"❌ 应截断到 5 条，实际 {len(items)}"
+    assert items[0]["text"] == "第3个梦", "❌ 最旧的应被挤掉"
+    assert log.latest()["text"] == "第7个梦"
+    print("✓ 10.2: DreamLog 滚动截断到 max_items")
+
+
+def test_10_3_roll_recall_bounds():
+    """回忆掷骰：rate=0 恒忘，rate=1 恒记得，越界值被夹住"""
+    from circadian.dream_log import roll_recall
+    assert roll_recall(0.0) is False, "❌ rate=0 应恒 False"
+    assert roll_recall(1.0) is True, "❌ rate=1 应恒 True"
+    assert roll_recall(-1) is False, "❌ 越界值应被夹到 [0,1]"
+    assert roll_recall(2) is True
+    print("✓ 10.3: roll_recall 边界（0=必忘 / 1=必记得）")
+
+
+def test_10_4_memory_buffer_dream_filter():
+    """梦轮（source=dream）默认被过滤；include_dream=True 时可见"""
+    import asyncio
+    from circadian.memory_buffer import MemoryBuffer
+
+    p = _FakePersistence()
+    buf = MemoryBuffer(p)
+    asyncio.run(buf.append("早安", "嗯……醒了"))
+    # 本轮 prompt 注入过梦 → AI 复述梦，记为 dream
+    asyncio.run(buf.append("昨晚梦到什么了", "梦里好像在下雨的图书馆……", source="dream"))
+    asyncio.run(buf.append("今天干嘛", "想出去走走"))
+
+    text = buf.recent_text(8)
+    assert "下雨的图书馆" not in text, "❌ 梦轮复述不应出现在素材里（防自我繁殖）"
+    assert "早安" in text and "想出去走走" in text
+    assert "下雨的图书馆" in buf.recent_text(8, include_dream=True), "❌ include_dream=True 应可见"
+    print("✓ 10.4: MemoryBuffer 梦轮过滤（默认排除，include_dream 可见）")
+
+
+def test_10_5_memory_buffer_old_items_compatible():
+    """旧记录（无 s 字段）视为真实互动，不被过滤"""
+    import asyncio
+    from circadian.memory_buffer import MemoryBuffer
+
+    p = _FakePersistence()
+    p.store["memory_buffer"] = [
+        {"t": "08-01 10:00", "u": "旧对话", "r": "旧回复"},  # v0.4.1 格式，无 s
+    ]
+    buf = MemoryBuffer(p)
+    asyncio.run(buf.load())
+    assert "旧对话" in buf.recent_text(5), "❌ 旧格式记录应视为 real 不被过滤"
+    print("✓ 10.5: MemoryBuffer 旧格式兼容（无 s 字段 → real）")
+
+
+def test_10_6_dream_prompt_marked():
+    """梦残片注入 prompt 时必须带'这是梦'标记；不记得的梦不注入"""
+    import time
+    from circadian.emotional_state import EmotionalState, format_emotional_context
+
+    state = EmotionalState(
+        mood="平静", intensity=0.5,
+        last_update=time.time(),
+        dream_content="梦里全是可以吃的云",
+        pending_dream_to_show=True,
+    )
+    text = format_emotional_context(state)
+    assert "这是梦" in text, "❌ 梦残片注入必须带'这是梦'标记"
+    assert "可以吃的云" in text
+    # 不记得的梦（pending=False）不注入
+    state.pending_dream_to_show = False
+    assert "可以吃的云" not in format_emotional_context(state)
+    print("✓ 10.6: 梦残片注入带'这是梦'标记；不记得的梦不注入")
+
+
+# ─────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("=" * 60)
@@ -530,6 +640,14 @@ if __name__ == "__main__":
     test_9_1_qweather_parse_status()
     test_9_2_qweather_exported()
 
+    print("\n[10] 梦境记忆隔离（v0.4.2）")
+    test_10_1_dream_log_append_and_source()
+    test_10_2_dream_log_rolling_trim()
+    test_10_3_roll_recall_bounds()
+    test_10_4_memory_buffer_dream_filter()
+    test_10_5_memory_buffer_old_items_compatible()
+    test_10_6_dream_prompt_marked()
+
     print("\n" + "=" * 60)
-    print("✅ 所有 v0.3.0+v0.4.0 测试通过！")
+    print("✅ 所有 v0.3.0 ~ v0.4.2 测试通过！")
     print("=" * 60)

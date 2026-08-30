@@ -1,7 +1,7 @@
 name: astrbot_plugin_circadian
 desc: 生理节律插件——睡眠、苏醒、半醒自主活动、梦境生成、感官系统，让 AI 拥有自己的生物钟与对外界环境的感知。
 author: junqian-dev
-version: 0.4.1
+version: 0.4.2
 support_platforms:
   - telegram
   - discord

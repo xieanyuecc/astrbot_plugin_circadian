@@ -11,6 +11,7 @@ from astrbot import logger
 CIRCADIAN_STATE_KEY = "circadian_state"
 EMOTIONAL_STATE_KEY = "emotional_state"
 DREAM_MEMORY_KEY = "dream_memory"
+DREAM_LOG_KEY = "dream_log"
 PENDING_DREAM_KEY = "pending_dream"
 SEMI_AWAKE_LAMBDA_KEY = "semi_awake_lambda"
 WEATHER_SNAPSHOT_KEY = "weather_snapshot"
@@ -46,6 +47,13 @@ class CircadianPersistence:
 
     async def load_dream(self) -> Optional[str]:
         return await self._get(DREAM_MEMORY_KEY)
+
+    # --- 梦境日志（v0.4.2 隔离：独立于真实记忆的历史梦境，滚动截断） ---
+    async def save_dream_log(self, items: list):
+        await self._put(DREAM_LOG_KEY, items)
+
+    async def load_dream_log(self) -> Optional[list]:
+        return await self._get(DREAM_LOG_KEY)
 
     async def save_pending_dream(self, pending: bool):
         await self._put(PENDING_DREAM_KEY, pending)

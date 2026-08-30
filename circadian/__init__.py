@@ -1,6 +1,7 @@
 from .state_machine import CircadianState, CircadianStateMachine
 from .emotional_state import EmotionalState
 from .dream_generator import DreamGenerator
+from .dream_log import DreamLog, roll_recall
 from .semi_awake_activities import SemiAwakeEngine
 from .memory_buffer import MemoryBuffer
 from .clock import CircadianClock
@@ -20,6 +21,8 @@ __all__ = [
     "CircadianStateMachine",
     "EmotionalState",
     "DreamGenerator",
+    "DreamLog",
+    "roll_recall",
     "SemiAwakeEngine",
     "MemoryBuffer",
     "CircadianClock",
